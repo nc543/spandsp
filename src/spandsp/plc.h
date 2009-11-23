@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: plc.h,v 1.14 2007/04/05 19:20:49 steveu Exp $
+ * $Id: plc.h,v 1.16 2007/11/30 12:20:35 steveu Exp $
  */
 
 /*! \file */
@@ -128,7 +128,7 @@ typedef struct
 } plc_state_t;
 
 
-#ifdef __cplusplus
+#if defined(__cplusplus)
 extern "C"
 {
 #endif
@@ -158,9 +158,9 @@ plc_state_t *plc_init(plc_state_t *s);
 /*! Free a packet loss concealer context.
     \param s The packet loss concealer context.
     \return 0 for OK. */
-int plc_release(plc_state_t *s);
+int plc_free(plc_state_t *s);
 
-#ifdef __cplusplus
+#if defined(__cplusplus)
 }
 #endif
 

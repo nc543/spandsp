@@ -1,7 +1,7 @@
 /*
  * SpanDSP - a series of DSP components for telephony
  *
- * t38_terminal.h - An implementation of T.38, less the packet exchange part
+ * t38_terminal.h - T.38 termination, less the packet exchange part
  *
  * Written by Steve Underwood <steveu@coppice.org>
  *
@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: t38_terminal.h,v 1.17 2007/04/05 19:20:50 steveu Exp $
+ * $Id: t38_terminal.h,v 1.24 2007/11/30 12:20:35 steveu Exp $
  */
 
 /*! \file */
@@ -42,6 +42,9 @@
 typedef struct
 {
     t38_core_state_t t38;
+
+    /*! \brief Use (actually allow time for) talker echo protection when transmitting. */
+    int use_tep;    
 
     /*! \brief HDLC transmit buffer */
     uint8_t tx_buf[T38_MAX_HDLC_LEN];
@@ -68,6 +71,8 @@ typedef struct
 
     int current_rx_type;
     int current_tx_type;
+    
+    int trailer_bytes;
 
     /*! \brief TRUE is there has been some T.38 data missed (i.e. lost packets) */
     int missing_data;
@@ -77,6 +82,7 @@ typedef struct
     int octets_per_data_packet;
     
     int ms_per_tx_chunk;
+    int merge_tx_fields;
 
     /*! \brief The number of times an indicator packet will be sent. Numbers greater than one
                will increase reliability for UDP transmission. Zero is valid, to suppress all
@@ -95,7 +101,7 @@ typedef struct
     logging_state_t logging;
 } t38_terminal_state_t;
 
-#ifdef __cplusplus
+#if defined(__cplusplus)
 extern "C"
 {
 #endif
@@ -104,7 +110,14 @@ int t38_terminal_send_timeout(t38_terminal_state_t *s, int samples);
 
 void t38_terminal_set_config(t38_terminal_state_t *s, int without_pacing);
 
-/*! \brief Initialise a termination mode T.38 context.
+/*! Select whether the time for talker echo protection tone will be allowed for when sending.
+    \brief Select whether TEP time will be allowed for.
+    \param s The T.38 context.
+    \param use_tep TRUE if TEP should be allowed for.
+*/
+void t38_terminal_set_tep_mode(t38_terminal_state_t *s, int use_tep);
+
+    /*! \brief Initialise a termination mode T.38 context.
     \param s The T.38 context.
     \param calling_party TRUE if the context is for a calling party. FALSE if the
            context is for an answering party.
@@ -116,7 +129,19 @@ t38_terminal_state_t *t38_terminal_init(t38_terminal_state_t *s,
                                         t38_tx_packet_handler_t *tx_packet_handler,
                                         void *tx_packet_user_data);
 
-#ifdef __cplusplus
+/*! Release a termination mode T.38 context.
+    \brief Release a T.38 context.
+    \param s The T.38 context.
+    \return 0 for OK, else -1. */
+int t38_terminal_release(t38_terminal_state_t *s);
+
+/*! Free a a termination mode T.38 context.
+    \brief Free a T.38 context.
+    \param s The T.38 context.
+    \return 0 for OK, else -1. */
+int t38_terminal_free(t38_terminal_state_t *s);
+
+#if defined(__cplusplus)
 }
 #endif
 

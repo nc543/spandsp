@@ -22,13 +22,13 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: v27ter_rx.h,v 1.36 2007/04/05 19:20:50 steveu Exp $
+ * $Id: v27ter_rx.h,v 1.40 2007/11/30 12:20:36 steveu Exp $
  */
 
 /*! \file */
 
-#if !defined(_SPANDSP_V27TER_RX_H_)
-#define _SPANDSP_V27TER_RX_H_
+#if !defined(_V27TER_RX_H_)
+#define _V27TER_RX_H_
 
 /*! \page v27ter_rx_page The V.27ter receiver
 
@@ -81,7 +81,11 @@ typedef struct
     void *qam_user_data;
 
     /*! \brief The route raised cosine (RRC) pulse shaping filter buffer. */
+#if defined(SPANDSP_USE_FIXED_POINT)
+    int16_t rrc_filter[2*V27TER_RX_FILTER_STEPS];
+#else
     float rrc_filter[2*V27TER_RX_FILTER_STEPS];
+#endif
     /*! \brief Current offset into the RRC pulse shaping filter buffer. */
     int rrc_filter_step;
 
@@ -90,12 +94,15 @@ typedef struct
     /*! \brief A counter for the number of consecutive bits of repeating pattern through
                the scrambler. */
     int scrambler_pattern_count;
-    int in_training;
+    /*! \brief The section of the training data we are currently in. */
+    int training_stage;
     int training_bc;
     int training_count;
     float training_error;
-    int carrier_present;
+    /*! \brief The value of the last signal sample, using the a simple HPF for signal power estimation. */
     int16_t last_sample;
+    /*! \brief >0 if a signal above the minimum is present. It may or may not be a V.27ter signal. */
+    int signal_present;
     /*! \brief TRUE if the previous trained values are to be reused. */
     int old_train;
 
@@ -166,11 +173,11 @@ v27ter_rx_state_t *v27ter_rx_init(v27ter_rx_state_t *s, int rate, put_bit_func_t
     \return 0 for OK, -1 for bad parameter */
 int v27ter_rx_restart(v27ter_rx_state_t *s, int rate, int old_train);
 
-/*! Release a V.27ter modem receive context.
-    \brief Release a V.27ter modem receive context.
+/*! Free a V.27ter modem receive context.
+    \brief Free a V.27ter modem receive context.
     \param s The modem context.
     \return 0 for OK */
-int v27ter_rx_release(v27ter_rx_state_t *s);
+int v27ter_rx_free(v27ter_rx_state_t *s);
 
 /*! Change the put_bit function associated with a V.27ter modem receive context.
     \brief Change the put_bit function associated with a V.27ter modem receive context.

@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: dds.c,v 1.18 2006/12/15 15:03:59 steveu Exp $
+ * $Id: dds_int.c,v 1.4 2007/09/06 12:24:54 steveu Exp $
  */
 
 /*! \file */
@@ -40,6 +40,7 @@
 #endif
 
 #include "spandsp/telephony.h"
+#include "spandsp/complex.h"
 #include "spandsp/dds.h"
 
 #if !defined(M_PI)
@@ -202,13 +203,13 @@ float dds_frequency(int32_t phase_rate)
 
 int dds_scaling_dbm0(float level)
 {
-    return (int) (powf(10.0f, (level - DBM0_MAX_POWER)/20.0f)*(32767.0f*1.414214f));
+    return (int) (powf(10.0f, (level - DBM0_MAX_SINE_POWER)/20.0f)*32767.0f);
 }
 /*- End of function --------------------------------------------------------*/
 
 int dds_scaling_dbov(float level)
 {
-    return (int) (powf(10.0f, (level + 3.02f)/20.0f)*(32767.0f*1.414214f));
+    return (int) (powf(10.0f, (level - DBOV_MAX_SINE_POWER)/20.0f)*32767.0f);
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -236,6 +237,12 @@ int16_t dds_offset(uint32_t phase_acc, int32_t phase_offset)
 }
 /*- End of function --------------------------------------------------------*/
 
+void dds_advance(uint32_t *phase_acc, int32_t phase_rate)
+{
+    *phase_acc += phase_rate;
+}
+/*- End of function --------------------------------------------------------*/
+
 int16_t dds(uint32_t *phase_acc, int32_t phase_rate)
 {
     int16_t amp;
@@ -256,23 +263,22 @@ int16_t dds_mod(uint32_t *phase_acc, int32_t phase_rate, int scale, int32_t phas
 }
 /*- End of function --------------------------------------------------------*/
 
-icomplex_t dds_complex(uint32_t *phase_acc, int32_t phase_rate)
+complexi_t dds_complexi(uint32_t *phase_acc, int32_t phase_rate)
 {
-    icomplex_t amp;
+    complexi_t amp;
 
-    amp.re = dds_lookup(*phase_acc + (1 << 30));
-    amp.im = dds_lookup(*phase_acc);
+    amp = complex_seti(dds_lookup(*phase_acc + (1 << 30)), dds_lookup(*phase_acc));
     *phase_acc += phase_rate;
     return amp;
 }
 /*- End of function --------------------------------------------------------*/
 
-icomplex_t dds_complex_mod(uint32_t *phase_acc, int32_t phase_rate, int scale, int32_t phase)
+complexi_t dds_complexi_mod(uint32_t *phase_acc, int32_t phase_rate, int scale, int32_t phase)
 {
-    icomplex_t amp;
+    complexi_t amp;
 
-    amp.re = (dds_lookup(*phase_acc + phase + (1 << 30))*scale) >> 15;
-    amp.im = (dds_lookup(*phase_acc + phase)*scale) >> 15;
+    amp = complex_seti((dds_lookup(*phase_acc + phase + (1 << 30))*scale) >> 15,
+                       (dds_lookup(*phase_acc + phase)*scale) >> 15);
     *phase_acc += phase_rate;
     return amp;
 }

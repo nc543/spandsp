@@ -1,4 +1,3 @@
-#define ENABLE_V17
 //#define ADD_MAINS_INTERFERENCE
 /*
  * SpanDSP - a series of DSP components for telephony
@@ -24,7 +23,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: v17_tests.c,v 1.65 2007/03/28 13:56:05 steveu Exp $
+ * $Id: v17_tests.c,v 1.75 2007/11/10 11:14:59 steveu Exp $
  */
 
 /*! \page v17_tests_page V.17 modem tests
@@ -55,24 +54,16 @@ display of modem status is maintained.
 #define ENABLE_GUI
 #endif
 
-#include <inttypes.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <fcntl.h>
+#include <unistd.h>
 #include <string.h>
-#if defined(HAVE_TGMATH_H)
-#include <tgmath.h>
-#endif
-#if defined(HAVE_MATH_H)
-#include <math.h>
-#endif
-#include <assert.h>
 #include <audiofile.h>
-#include <tiffio.h>
 
 #include "spandsp.h"
-#include "test_utils.h"
-#include "line_model.h"
+#include "spandsp-sim.h"
+
 #if defined(ENABLE_GUI)
 #include "modem_monitor.h"
 #include "line_model_monitor.h"
@@ -199,7 +190,7 @@ static void qam_report(void *user_data, const complexf_t *constel, const complex
     complexf_t *coeffs;
     float fpower;
     v17_rx_state_t *rx;
-    static float smooth_power = 0.0;
+    static float smooth_power = 0.0f;
     static int update_interval = 100;
 
     rx = (v17_rx_state_t *) user_data;
@@ -215,7 +206,7 @@ static void qam_report(void *user_data, const complexf_t *constel, const complex
 #endif
         fpower = (constel->re - target->re)*(constel->re - target->re)
                + (constel->im - target->im)*(constel->im - target->im);
-        smooth_power = 0.95*smooth_power + 0.05*fpower;
+        smooth_power = 0.95f*smooth_power + 0.05f*fpower;
         printf("%8d [%8.4f, %8.4f] [%8.4f, %8.4f] %2x %8.4f %8.4f %9.4f %7.3f\n",
                symbol_no,
                constel->re,
@@ -257,7 +248,6 @@ int main(int argc, char *argv[])
     AFfilesetup filesetup;
     int outframes;
     int samples;
-    int i;
     int tep;
     int block_no;
     int noise_level;
@@ -268,6 +258,7 @@ int main(int argc, char *argv[])
     int channel_codec;
     int rbs_pattern;
     float x;
+    int opt;
 
     channel_codec = MUNGE_CODEC_NONE;
     rbs_pattern = 0;
@@ -275,69 +266,62 @@ int main(int argc, char *argv[])
     tep = FALSE;
     line_model_no = 0;
     decode_test_file = NULL;
+    use_gui = FALSE;
     noise_level = -70;
     signal_level = -13;
     bits_per_test = 50000;
     log_audio = FALSE;
-    for (i = 1;  i < argc;  i++)
+    while ((opt = getopt(argc, argv, "b:c:d:glm:n:r:s:t")) != -1)
     {
-        if (strcmp(argv[i], "-b") == 0)
+        switch (opt)
         {
-            bits_per_test = atoi(argv[++i]);
-            continue;
-        }
-        if (strcmp(argv[i], "-c") == 0)
-        {
-            channel_codec = atoi(argv[++i]);
-            continue;
-        }
-        if (strcmp(argv[i], "-d") == 0)
-        {
-            decode_test_file = argv[++i];
-            continue;
-        }
-        if (strcmp(argv[i], "-t") == 0)
-        {
-            tep = TRUE;
-            continue;
-        }
-        if (strcmp(argv[i], "-g") == 0)
-        {
+        case 'b':
+            bits_per_test = atoi(optarg);
+            break;
+        case 'c':
+            channel_codec = atoi(optarg);
+            break;
+        case 'd':
+            decode_test_file = optarg;
+            break;
+        case 'g':
             use_gui = TRUE;
-            continue;
-        }
-        if (strcmp(argv[i], "-l") == 0)
-        {
+            break;
+        case 'l':
             log_audio = TRUE;
-            continue;
+            break;
+        case 'm':
+            line_model_no = atoi(optarg);
+            break;
+        case 'n':
+            noise_level = atoi(optarg);
+            break;
+        case 'r':
+            rbs_pattern = atoi(optarg);
+            break;
+        case 's':
+            signal_level = atoi(optarg);
+            break;
+        case 't':
+            tep = TRUE;
+            break;
+        default:
+            //usage();
+            exit(2);
+            break;
         }
-        if (strcmp(argv[i], "-m") == 0)
-        {
-            line_model_no = atoi(argv[++i]);
-            continue;
-        }
-        if (strcmp(argv[i], "-n") == 0)
-        {
-            noise_level = atoi(argv[++i]);
-            continue;
-        }
-        if (strcmp(argv[i], "-r") == 0)
-        {
-            rbs_pattern = atoi(argv[++i]);
-            continue;
-        }
-        if (strcmp(argv[i], "-s") == 0)
-        {
-            signal_level = atoi(argv[++i]);
-            continue;
-        }
-        if (strcmp(argv[i], "14400") == 0)
+    }
+    argc -= optind;
+    argv += optind;
+    if (argc > 0)
+    {
+        if (strcmp(argv[0], "14400") == 0)
             test_bps = 14400;
-        else if (strcmp(argv[i], "12000") == 0)
+        else if (strcmp(argv[0], "12000") == 0)
             test_bps = 12000;
-        else if (strcmp(argv[i], "9600") == 0)
+        else if (strcmp(argv[0], "9600") == 0)
             test_bps = 9600;
-        else if (strcmp(argv[i], "7200") == 0)
+        else if (strcmp(argv[0], "7200") == 0)
             test_bps = 7200;
         else
         {
@@ -375,19 +359,19 @@ int main(int argc, char *argv[])
             fprintf(stderr, "    Cannot open wave file '%s'\n", decode_test_file);
             exit(2);
         }
-        if ((x = afGetFrameSize(inhandle, AF_DEFAULT_TRACK, 1)) != 2.0)
+        if ((x = afGetFrameSize(inhandle, AF_DEFAULT_TRACK, 1)) != 2.0f)
         {
-            printf("    Unexpected frame size in speech file '%s'\n", decode_test_file);
+            printf("    Unexpected frame size in speech file '%s' (%f)\n", decode_test_file, x);
             exit(2);
         }
         if ((x = afGetRate(inhandle, AF_DEFAULT_TRACK)) != (float) SAMPLE_RATE)
         {
-            printf("    Unexpected sample rate in speech file '%s'\n", decode_test_file);
+            printf("    Unexpected sample rate in speech file '%s' (%f)\n", decode_test_file, x);
             exit(2);
         }
-        if ((x = afGetChannels(inhandle, AF_DEFAULT_TRACK)) != 1.0)
+        if ((x = afGetChannels(inhandle, AF_DEFAULT_TRACK)) != 1.0f)
         {
-            printf("    Unexpected number of channels in speech file '%s'\n", decode_test_file);
+            printf("    Unexpected number of channels in speech file '%s' (%f)\n", decode_test_file, x);
             exit(2);
         }
     }
@@ -397,7 +381,7 @@ int main(int argc, char *argv[])
         v17_tx_init(&tx, test_bps, tep, v17getbit, NULL);
         v17_tx_power(&tx, signal_level);
         /* Move the carrier off a bit */
-        tx.carrier_phase_rate = dds_phase_ratef(1792.0);
+        tx.carrier_phase_rate = dds_phase_ratef(1792.0f);
         tx.carrier_phase = 0x40000000;
 
         bert_init(&bert, bits_per_test, BERT_PATTERN_ITU_O152_11, test_bps, 20);
@@ -422,7 +406,7 @@ int main(int argc, char *argv[])
 #if defined(ENABLE_GUI)
     if (use_gui)
     {
-        qam_monitor = qam_monitor_init(10.0, NULL);
+        qam_monitor = qam_monitor_init(10.0f, NULL);
         if (!decode_test_file)
         {
             start_line_model_monitor(129);
@@ -440,12 +424,12 @@ int main(int argc, char *argv[])
                                    AF_DEFAULT_TRACK,
                                    amp,
                                    BLOCK_LEN);
-            if (samples == 0)
-                break;
 #if defined(ENABLE_GUI)
             if (use_gui)
                 qam_monitor_update_audio_level(qam_monitor, amp, samples);
 #endif
+            if (samples == 0)
+                break;
         }
         else
         {
@@ -471,7 +455,6 @@ int main(int argc, char *argv[])
                    number of bits out of the receiver should be at least the number we sent. Also, since BERT sync should have occurred
                    rapidly at the start of transmission, the last report should have occurred at not much less than the total number of
                    bits we sent. */
-#if 0
                 if (bert_results.total_bits < bits_per_test
                     ||
                     latest_results.total_bits < bits_per_test - 100
@@ -480,16 +463,23 @@ int main(int argc, char *argv[])
                 {
                     break;
                 }
-#endif
                 memset(&latest_results, 0, sizeof(latest_results));
+                signal_level--;
+                /* Bump the receiver AGC gain by 1dB, to compensate for the above */
+                rx.agc_scaling_save *= 1.122f;
                 v17_tx_restart(&tx, test_bps, tep, TRUE);
                 v17_tx_power(&tx, signal_level);
                 v17_rx_restart(&rx, test_bps, TRUE);
                 //rx.eq_put_step = rand()%(192*10/3);
                 bert_init(&bert, bits_per_test, BERT_PATTERN_ITU_O152_11, test_bps, 20);
                 bert_set_report(&bert, 10000, reporter, NULL);
+                one_way_line_model_release(line_model);
+                if ((line_model = one_way_line_model_init(line_model_no, (float) noise_level, channel_codec, 0)) == NULL)
+                {
+                    fprintf(stderr, "    Failed to create line model\n");
+                    exit(2);
+                }
             }
-            one_way_line_model(line_model, amp, gen_amp, samples);
             if (log_audio)
             {
                 outframes = afWriteFrames(outhandle,
@@ -502,6 +492,7 @@ int main(int argc, char *argv[])
                     exit(2);
                 }
             }
+            one_way_line_model(line_model, amp, gen_amp, samples);
         }
 #if defined(ENABLE_GUI)
         if (use_gui  &&  !decode_test_file)
@@ -509,21 +500,26 @@ int main(int argc, char *argv[])
 #endif
         v17_rx(&rx, amp, samples);
     }
-    if (decode_test_file)
-    {
-#if defined(ENABLE_GUI)
-        if (use_gui)
-            qam_wait_to_end(qam_monitor);
-#endif
-    }
-    else
+    if (!decode_test_file)
     {
         bert_result(&bert, &bert_results);
         fprintf(stderr, "At completion:\n");
         fprintf(stderr, "Final result %ddBm0, %d bits, %d bad bits, %d resyncs\n", signal_level, bert_results.total_bits, bert_results.bad_bits, bert_results.resyncs);
         fprintf(stderr, "Last report  %ddBm0, %d bits, %d bad bits, %d resyncs\n", signal_level, latest_results.total_bits, latest_results.bad_bits, latest_results.resyncs);
         one_way_line_model_release(line_model);
+
+        if (signal_level > -43)
+        {
+            printf("Tests failed.\n");
+            exit(2);
+        }
+
+        printf("Tests passed.\n");
     }
+#if defined(ENABLE_GUI)
+    if (use_gui)
+        qam_wait_to_end(qam_monitor);
+#endif
     if (log_audio)
     {
         if (afCloseFile(outhandle))

@@ -23,7 +23,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: modem_connect_tones.h,v 1.6 2007/04/05 19:20:49 steveu Exp $
+ * $Id: modem_connect_tones.h,v 1.10 2007/11/30 12:20:35 steveu Exp $
  */
  
 /*! \file */
@@ -97,20 +97,30 @@ typedef struct
     int tone_cycle_duration;
     int good_cycles;
     int hit;
+    /*! \brief A V.21 FSK modem context used when searching for FAX preamble. */
+    fsk_rx_state_t v21rx;
+    int one_zero_weight[2];
+    int odd_even;
+    int preamble_on;
 } modem_connect_tones_rx_state_t;
 
-#ifdef __cplusplus
+#if defined(__cplusplus)
 extern "C"
 {
 #endif
 
-/*! \brief Initialse an instance of the echo canceller disable tone generator.
+/*! \brief Initialise an instance of the modem connect tones generator.
     \param s The context.
 */
 modem_connect_tones_tx_state_t *modem_connect_tones_tx_init(modem_connect_tones_tx_state_t *s,
                                                             int tone_type);
 
-/*! \brief Generate a block of echo canceller disable tone samples.
+/*! \brief Free an instance of the modem connect tones generator.
+    \param s The context.
+    \return 0 for OK, else -1. */
+int modem_connect_tones_tx_free(modem_connect_tones_tx_state_t *s);
+
+/*! \brief Generate a block of modem connect tones samples.
     \param s The context.
     \param amp An array of signal samples.
     \param len The number of samples to generate.
@@ -120,7 +130,7 @@ int modem_connect_tones_tx(modem_connect_tones_tx_state_t *s,
                            int16_t amp[],
                            int len);
 
-/*! \brief Process a block of samples through an instance of the modem_connect
+/*! \brief Process a block of samples through an instance of the modem connect
            tones detector.
     \param s The context.
     \param amp An array of signal samples.
@@ -137,7 +147,7 @@ int modem_connect_tones_rx(modem_connect_tones_rx_state_t *s,
 */
 int modem_connect_tones_rx_get(modem_connect_tones_rx_state_t *s);
 
-/*! \brief Initialise an instance of the modem_connect tones detector.
+/*! \brief Initialise an instance of the modem connect tones detector.
     \param s The context.
     \param tone_type The type of connect tone being tested for.
     \param tone_callback An optional callback routine, used to report tones
@@ -149,7 +159,12 @@ modem_connect_tones_rx_state_t *modem_connect_tones_rx_init(modem_connect_tones_
                                                             tone_report_func_t tone_callback,
                                                             void *user_data);
 
-#ifdef __cplusplus
+/*! \brief Free an instance of the modem connect tones detector.
+    \param s The context.
+    \return 0 for OK, else -1. */
+int modem_connect_tones_rx_free(modem_connect_tones_rx_state_t *s);
+
+#if defined(__cplusplus)
 }
 #endif
 

@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: adsi_tests.c,v 1.28 2006/11/19 14:07:26 steveu Exp $
+ * $Id: adsi_tests.c,v 1.37 2007/11/10 11:14:57 steveu Exp $
  */
 
 /*! \page adsi_tests_page ADSI tests
@@ -40,20 +40,13 @@ tests, these tests do not include line modelling.
 #include "config.h"
 #endif
 
-#include <inttypes.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
-#if defined(HAVE_TGMATH_H)
-#include <tgmath.h>
-#endif
-#if defined(HAVE_MATH_H)
-#include <math.h>
-#endif
 #include <assert.h>
 #include <audiofile.h>
-#include <tiffio.h>
 
 #include "spandsp.h"
 
@@ -71,9 +64,7 @@ adsi_tx_state_t tx_adsi;
 int current_standard = 0;
 int good_message_received;
 
-int adsi_create_message(adsi_tx_state_t *s, uint8_t *msg);
-
-int adsi_create_message(adsi_tx_state_t *s, uint8_t *msg)
+static int adsi_create_message(adsi_tx_state_t *s, uint8_t *msg)
 {
     const char *t;
     int len;
@@ -176,7 +167,35 @@ int adsi_create_message(adsi_tx_state_t *s, uint8_t *msg)
         len = adsi_add_field(s, msg, len, JCLIP_DIALED_NUM_DES, (uint8_t *) "215", 3);
         break;
     case ADSI_STANDARD_CLIP_DTMF:
-        len = adsi_add_field(s, msg, 0, CLIP_DTMF_CALLER_NUMBER, (uint8_t *) "12345678", 8);
+        if (cycle > 4)
+            cycle = 0;
+        switch (cycle)
+        {
+        case 0:
+            len = adsi_add_field(s, msg, -1, CLIP_DTMF_C_TERMINATED, NULL, 0);
+            len = adsi_add_field(s, msg, len, CLIP_DTMF_C_CALLER_NUMBER, (uint8_t *) "12345678", 8);
+            len = adsi_add_field(s, msg, len, CLIP_DTMF_C_ABSENCE, (uint8_t *) "10", 2);
+            len = adsi_add_field(s, msg, len, CLIP_DTMF_C_REDIRECT_NUMBER, (uint8_t *) "87654321", 8);
+            break;
+        case 1:
+            len = adsi_add_field(s, msg, -1, CLIP_DTMF_HASH_TERMINATED, NULL, 0);
+            len = adsi_add_field(s, msg, len, CLIP_DTMF_HASH_CALLER_NUMBER, (uint8_t *) "12345678", 8);
+            break;
+        case 2:
+            len = adsi_add_field(s, msg, -1, CLIP_DTMF_HASH_TERMINATED, NULL, 0);
+            len = adsi_add_field(s, msg, len, CLIP_DTMF_HASH_ABSENCE, (uint8_t *) "1", 1);
+            break;
+        case 3:
+            /* Test the D<number>C format, used in Taiwan and Kuwait */
+            len = adsi_add_field(s, msg, -1, CLIP_DTMF_HASH_TERMINATED, NULL, 0);
+            len = adsi_add_field(s, msg, len, CLIP_DTMF_HASH_ABSENCE, (uint8_t *) "12345678", 8);
+            break;
+        case 4:
+            /* Test the <number># format, with no header */
+            len = adsi_add_field(s, msg, -1, CLIP_DTMF_HASH_TERMINATED, NULL, 0);
+            len = adsi_add_field(s, msg, len, CLIP_DTMF_HASH_UNSPECIFIED, (uint8_t *) "12345678", 8);
+            break;
+        }
         break;
     case ADSI_STANDARD_TDD:
         t = "The quick Brown Fox Jumps Over The Lazy dog 0123456789!@#$%^&*()";
@@ -203,7 +222,7 @@ static void put_adsi_msg(void *user_data, const uint8_t *msg, int len)
     for (i = 0;  i < len;  i++)
     {
         printf("%02x ", msg[i]);
-        if ((i & 0xf) == 0xf)
+        if ((i & 0xF) == 0xF)
             printf("\n");
     }
     printf("\n");
@@ -348,7 +367,7 @@ static void put_adsi_msg(void *user_data, const uint8_t *msg, int len)
                         case ACLIP_DIALED_NUMBER:
                             printf("Dialed number");
                             break;
-                        case ACLIP_ABSENCE1:
+                        case ACLIP_NUMBER_ABSENCE:
                             printf("Caller's number absent: 'O' or 'P'");
                             break;
                         case ACLIP_REDIRECT:
@@ -360,7 +379,7 @@ static void put_adsi_msg(void *user_data, const uint8_t *msg, int len)
                         case ACLIP_CALLER_NAME:
                             printf("Caller's name");
                             break;
-                        case ACLIP_ABSENCE2:
+                        case ACLIP_NAME_ABSENCE:
                             printf("Caller's name absent: 'O' or 'P'");
                             break;
                         }
@@ -395,15 +414,45 @@ static void put_adsi_msg(void *user_data, const uint8_t *msg, int len)
                 case ADSI_STANDARD_CLIP_DTMF:
                     switch (message_type)
                     {
-                    case CLIP_DTMF_CALLER_NUMBER:
-                        printf("Caller's number");
+                    case CLIP_DTMF_HASH_TERMINATED:
+                        switch (field_type)
+                        {
+                        case CLIP_DTMF_HASH_CALLER_NUMBER:
+                            printf("Caller's number");
+                            break;
+                        case CLIP_DTMF_HASH_ABSENCE:
+                            printf("Caller's number absent: private (1), overseas (2) or not available (3)");
+                            break;
+                        case CLIP_DTMF_HASH_UNSPECIFIED:
+                            printf("Unspecified");
+                            break;
+                        }
                         break;
-                    case CLIP_DTMF_ABSENCE1:
-                        printf("Caller's number absent: private (1), overseas (2) or not available (3)");
+                    case CLIP_DTMF_C_TERMINATED:
+                        switch (field_type)
+                        {
+                        case CLIP_DTMF_C_CALLER_NUMBER:
+                            printf("Caller's number");
+                            break;
+                        case CLIP_DTMF_C_REDIRECT_NUMBER:
+                            printf("Redirect number");
+                            break;
+                        case CLIP_DTMF_C_ABSENCE:
+                            printf("Caller's number absent");
+                            break;
+                        }
                         break;
                     }
                     break;
                 case ADSI_STANDARD_TDD:
+                    if (len != 59
+                        ||
+                        memcmp(msg, "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 0123456789#$*()", 59))
+                    {
+                        printf("\n");
+                        printf("String error\n");
+                        exit(2);
+                    }
                     break;
                 }
             }
@@ -481,11 +530,11 @@ static void put_adsi_msg(void *user_data, const uint8_t *msg, int len)
                 case ADSI_STANDARD_CLIP_DTMF:
                     switch (message_type)
                     {
-                    case CLIP_DTMF_CALLER_NUMBER:
-                        printf("Caller's number");
+                    case CLIP_DTMF_HASH_TERMINATED:
+                        printf("# terminated");
                         break;
-                    case CLIP_DTMF_ABSENCE1:
-                        printf("Caller's number absent");
+                    case CLIP_DTMF_C_TERMINATED:
+                        printf("C terminated");
                         break;
                     default:
                         printf("Unknown");
@@ -522,44 +571,51 @@ int main(int argc, char *argv[])
     int outframes;
     int len;
     int i;
-    int j;
     int push;
     int log_audio;
+    int short_preamble;
+    int test_standard;
+    int first_standard;
+    int last_standard;
+    int opt;
 
     log_audio = FALSE;
     decode_test_file = NULL;
-    current_standard = ADSI_STANDARD_CLASS;
-    for (i = 1;  i < argc;  i++)
+    test_standard = -1;
+    short_preamble = FALSE;
+    while ((opt = getopt(argc, argv, "d:lps:")) != -1)
     {
-        if (strcmp(argv[i], "-d") == 0)
+        switch (opt)
         {
-            i++;
-            decode_test_file = argv[i];
-            continue;
-        }
-        if (strcmp(argv[i], "-s") == 0)
-        {
-            i++;
-            if (strcasecmp("CLASS", argv[i]) == 0)
-                current_standard = ADSI_STANDARD_CLASS;
-            else if (strcasecmp("CLIP", argv[i]) == 0)
-                current_standard = ADSI_STANDARD_CLIP;
-            else if (strcasecmp("A-CLIP", argv[i]) == 0)
-                current_standard = ADSI_STANDARD_ACLIP;
-            else if (strcasecmp("J-CLIP", argv[i]) == 0)
-                current_standard = ADSI_STANDARD_JCLIP;
-            else if (strcasecmp("CLIP-DTMF", argv[i]) == 0)
-                current_standard = ADSI_STANDARD_CLIP_DTMF;
-            else if (strcasecmp("TDD", argv[i]) == 0)
-                current_standard = ADSI_STANDARD_TDD;
-            else
-                current_standard = atoi(argv[i]);
-            continue;
-        }
-        if (strcmp(argv[i], "-l") == 0)
-        {
+        case 'd':
+            decode_test_file = optarg;
+            break;
+        case 'l':
             log_audio = TRUE;
-            continue;
+            break;
+        case 'p':
+            short_preamble = TRUE;
+            break;
+        case 's':
+            if (strcasecmp("CLASS", optarg) == 0)
+                test_standard = ADSI_STANDARD_CLASS;
+            else if (strcasecmp("CLIP", optarg) == 0)
+                test_standard = ADSI_STANDARD_CLIP;
+            else if (strcasecmp("A-CLIP", optarg) == 0)
+                test_standard = ADSI_STANDARD_ACLIP;
+            else if (strcasecmp("J-CLIP", optarg) == 0)
+                test_standard = ADSI_STANDARD_JCLIP;
+            else if (strcasecmp("CLIP-DTMF", optarg) == 0)
+                test_standard = ADSI_STANDARD_CLIP_DTMF;
+            else if (strcasecmp("TDD", optarg) == 0)
+                test_standard = ADSI_STANDARD_TDD;
+            else
+                test_standard = atoi(optarg);
+            break;
+        default:
+            //usage();
+            exit(2);
+            break;
         }
     }
     filesetup = AF_NULL_FILESETUP;
@@ -598,6 +654,10 @@ int main(int argc, char *argv[])
             fprintf(stderr, "    Cannot open wave file '%s'\n", decode_test_file);
             exit(2);
         }
+        if (test_standard < 0)
+            current_standard = ADSI_STANDARD_CLASS;
+        else
+            current_standard = test_standard;
 
         adsi_rx_init(&rx_adsi, current_standard, put_adsi_msg, NULL);
         span_log_set_level(&rx_adsi.logging, SPAN_LOG_SHOW_SEVERITY | SPAN_LOG_SHOW_PROTOCOL | SPAN_LOG_FLOW);
@@ -640,12 +700,23 @@ int main(int argc, char *argv[])
         }
         /* Go through all the standards */
         /* This assumes standard 0 is NULL, and TDD is the last in the list */
-        for (j = 1;  j <= ADSI_STANDARD_TDD;  j++)
+        if (test_standard < 0)
         {
-            printf("Testing %s\n", adsi_standard_to_str(j));
-            current_standard = j;
-            adsi_tx_init(&tx_adsi, j);
-            adsi_rx_init(&rx_adsi, j, put_adsi_msg, NULL);
+            first_standard = ADSI_STANDARD_CLASS;
+            last_standard = ADSI_STANDARD_TDD;
+        }
+        else
+        {
+            first_standard =
+            last_standard = test_standard;
+        }
+        for (current_standard = first_standard;  current_standard <= last_standard;  current_standard++)
+        {
+            printf("Testing %s\n", adsi_standard_to_str(current_standard));
+            adsi_tx_init(&tx_adsi, current_standard);
+            if (short_preamble)
+                adsi_tx_set_preamble(&tx_adsi, 50, 20, 5, -1);
+            adsi_rx_init(&rx_adsi, current_standard, put_adsi_msg, NULL);
 
             /* Fake an OK condition for the first message test */
             good_message_received = TRUE;
@@ -665,12 +736,12 @@ int main(int argc, char *argv[])
                     {
                         if (!good_message_received)
                         {
-                            printf("No message received %s (%d)\n", adsi_standard_to_str(j), i);
+                            printf("No message received %s (%d)\n", adsi_standard_to_str(current_standard), i);
                             exit(2);
                         }
                         good_message_received = FALSE;
                         adsi_msg_len = adsi_create_message(&tx_adsi, adsi_msg);
-                        adsi_msg_len = adsi_put_message(&tx_adsi, adsi_msg, adsi_msg_len);
+                        adsi_msg_len = adsi_tx_put_message(&tx_adsi, adsi_msg, adsi_msg_len);
                     }
                 }
                 if (len < BLOCK_LEN)

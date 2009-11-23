@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: complex_dds.c,v 1.20 2007/01/03 14:15:35 steveu Exp $
+ * $Id: dds_float.c,v 1.3 2007/09/06 12:24:54 steveu Exp $
  */
 
 /*! \file */
@@ -2115,13 +2115,19 @@ float dds_frequencyf(int32_t phase_rate)
 
 float dds_scaling_dbm0f(float level)
 {
-    return powf(10.0f, (level - DBM0_MAX_POWER)/20.0f)*(32767.0f*1.414214f);
+    return powf(10.0f, (level - DBM0_MAX_SINE_POWER)/20.0f)*32767.0f;
 }
 /*- End of function --------------------------------------------------------*/
 
 float dds_scaling_dbovf(float level)
 {
-    return powf(10.0f, (level + 3.02f)/20.0f)*(32767.0f*1.414214f);
+    return powf(10.0f, (level - DBOV_MAX_SINE_POWER)/20.0f)*32767.0f;
+}
+/*- End of function --------------------------------------------------------*/
+
+void dds_advancef(uint32_t *phase_acc, int32_t phase_rate)
+{
+    *phase_acc += phase_rate;
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -2145,8 +2151,6 @@ float dds_modf(uint32_t *phase_acc, int32_t phase_rate, float scale, int32_t pha
 }
 /*- End of function --------------------------------------------------------*/
 
-/* This is a simple direct digital synthesis (DDS) function to generate complex
-   sine waves. */
 complexf_t dds_complexf(uint32_t *phase_acc, int32_t phase_rate)
 {
     complexf_t amp;
@@ -2158,8 +2162,6 @@ complexf_t dds_complexf(uint32_t *phase_acc, int32_t phase_rate)
 }
 /*- End of function --------------------------------------------------------*/
 
-/* This is a simple direct digital synthesis (DDS) function to generate complex
-   sine waves. */
 complexf_t dds_complex_modf(uint32_t *phase_acc, int32_t phase_rate, float scale, int32_t phase)
 {
     complexf_t amp;

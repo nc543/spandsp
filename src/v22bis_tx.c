@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: v22bis_tx.c,v 1.35 2007/01/03 14:15:36 steveu Exp $
+ * $Id: v22bis_tx.c,v 1.37 2007/10/14 10:12:46 steveu Exp $
  */
 
 /*! \file */
@@ -983,8 +983,7 @@ int v22bis_tx(v22bis_state_t *s, int16_t amp[], int len)
                 s->tx_rrc_filter_step = 0;
         }
         /* Root raised cosine pulse shaping at baseband */
-        x.re = 0.0f;
-        x.im = 0.0f;
+        x = complex_setf(0.0f, 0.0f);
         for (i = 0;  i < V22BIS_TX_FILTER_STEPS;  i++)
         {
             x.re += pulseshaper[39 - s->tx_baud_phase][i]*s->tx_rrc_filter[i + s->tx_rrc_filter_step].re;
@@ -1069,6 +1068,8 @@ v22bis_state_t *v22bis_init(v22bis_state_t *s,
             return NULL;
     }
     memset(s, 0, sizeof(*s));
+    span_log_init(&s->logging, SPAN_LOG_NONE, NULL);
+    span_log_set_protocol(&s->logging, "V.22bis");
     s->bit_rate = bit_rate;
     s->caller = caller;
 
@@ -1098,8 +1099,6 @@ v22bis_state_t *v22bis_init(v22bis_state_t *s,
         }
     }
     v22bis_tx_power(s, -10.0f);
-    span_log_init(&s->logging, SPAN_LOG_NONE, NULL);
-    span_log_set_protocol(&s->logging, "V.22bis");
     v22bis_restart(s, s->bit_rate);
     return s;
 }

@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: super_tone_rx_tests.c,v 1.19 2007/02/27 16:52:16 steveu Exp $
+ * $Id: super_tone_rx_tests.c,v 1.23 2007/11/10 11:14:58 steveu Exp $
  */
 
 /*! \file */
@@ -36,20 +36,14 @@
 #endif
 
 #include <stdlib.h>
-#include <string.h>
-#include <strings.h>
 #include <stdio.h>
 #include <fcntl.h>
+#include <string.h>
+#include <strings.h>
 #include <ctype.h>
 #include <time.h>
-#include <inttypes.h>
 #include <sys/socket.h>
-#if defined(HAVE_TGMATH_H)
-#include <tgmath.h>
-#endif
-#if defined(HAVE_MATH_H)
-#include <math.h>
-#endif
+#include <audiofile.h>
 
 #if defined(HAVE_LIBXML_XMLMEMORY_H)
 #include <libxml/xmlmemory.h>
@@ -61,16 +55,16 @@
 #include <libxml/xinclude.h>
 #endif
 
-#include <audiofile.h>
-#include <tiffio.h>
-
 #include "spandsp.h"
 
 #define IN_FILE_NAME    "super_tone.wav"
+
+#define MITEL_DIR       "../itutests/mitel/"
 #define BELLCORE_DIR	"../itutests/bellcore/"
 
 const char *bellcore_files[] =
 {
+    MITEL_DIR    "mitel-cm7291-talkoff.wav",
     BELLCORE_DIR "tr-tsy-00763-1.wav",
     BELLCORE_DIR "tr-tsy-00763-2.wav",
     BELLCORE_DIR "tr-tsy-00763-3.wav",
@@ -351,7 +345,7 @@ static void super_tone_rx_fill_descriptor(super_tone_rx_descriptor_t *desc)
 }
 /*- End of function --------------------------------------------------------*/
 
-static void wakeup(void *data, int code, int level)
+static void wakeup(void *data, int code, int level, int delay)
 {
     if (code >= 0)
         printf("Current tone is %d '%s' '%s'\n", code, (tone_names[code])  ?  tone_names[code]  :  "???", (char *) data);

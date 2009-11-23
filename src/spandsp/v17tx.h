@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: v17tx.h,v 1.28 2007/04/05 19:20:50 steveu Exp $
+ * $Id: v17tx.h,v 1.32 2007/11/30 12:20:36 steveu Exp $
  */
 
 /*! \file */
@@ -97,10 +97,18 @@ typedef struct
     void *user_data;
 
     /*! \brief The gain factor needed to achieve the specified output power. */
+#if defined(SPANDSP_USE_FIXED_POINT)
+    int32_t gain;
+#else
     float gain;
+#endif
 
     /*! \brief The route raised cosine (RRC) pulse shaping filter buffer. */
+#if defined(SPANDSP_USE_FIXED_POINT)
+    complexi16_t rrc_filter[2*V17_TX_FILTER_STEPS];
+#else
     complexf_t rrc_filter[2*V17_TX_FILTER_STEPS];
+#endif
     /*! \brief Current offset into the RRC pulse shaping filter buffer. */
     int rrc_filter_step;
 
@@ -128,7 +136,11 @@ typedef struct
     int constellation_state;
     
     /*! \brief A pointer to the constellation currently in use. */
+#if defined(SPANDSP_USE_FIXED_POINT)
+    const complexi16_t *constellation;
+#else
     const complexf_t *constellation;
+#endif
     /*! \brief The current number of data bits per symbol. This does not include
                the redundant bit. */
     int bits_per_symbol;
@@ -138,7 +150,7 @@ typedef struct
     logging_state_t logging;
 } v17_tx_state_t;
 
-#ifdef __cplusplus
+#if defined(__cplusplus)
 extern "C"
 {
 #endif
@@ -169,11 +181,11 @@ v17_tx_state_t *v17_tx_init(v17_tx_state_t *s, int rate, int tep, get_bit_func_t
     \return 0 for OK, -1 for parameter error. */
 int v17_tx_restart(v17_tx_state_t *s, int rate, int tep, int short_train);
 
-/*! Release a V.17 modem transmit context.
-    \brief Release a V.17 modem transmit context.
+/*! Free a V.17 modem transmit context.
+    \brief Free a V.17 modem transmit context.
     \param s The modem context.
     \return 0 for OK */
-int v17_tx_release(v17_tx_state_t *s);
+int v17_tx_free(v17_tx_state_t *s);
 
 /*! Change the get_bit function associated with a V.17 modem transmit context.
     \brief Change the get_bit function associated with a V.17 modem transmit context.
@@ -191,7 +203,7 @@ void v17_tx_set_get_bit(v17_tx_state_t *s, get_bit_func_t get_bit, void *user_da
 */
 int v17_tx(v17_tx_state_t *s, int16_t amp[], int len);
 
-#ifdef __cplusplus
+#if defined(__cplusplus)
 }
 #endif
 

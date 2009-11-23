@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: fax_decode.c,v 1.26 2007/03/31 12:36:59 steveu Exp $
+ * $Id: fax_decode.c,v 1.38 2007/11/26 13:58:06 steveu Exp $
  */
 
 /*! \page fax_decode_page FAX decoder
@@ -37,23 +37,24 @@
 #include "config.h"
 #endif
 
-#include <inttypes.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#if defined(HAVE_TGMATH_H)
-#include <tgmath.h>
-#endif
-#if defined(HAVE_MATH_H)
-#include <math.h>
-#endif
 #include <assert.h>
 #include <audiofile.h>
-#include <tiffio.h>
 
 #include "spandsp.h"
 
 #define SAMPLES_PER_CHUNK   160
+
+#define DISBIT1     0x01
+#define DISBIT2     0x02
+#define DISBIT3     0x04
+#define DISBIT4     0x08
+#define DISBIT5     0x10
+#define DISBIT6     0x20
+#define DISBIT7     0x40
+#define DISBIT8     0x80
 
 enum
 {
@@ -63,8 +64,26 @@ enum
     FAX_V17_RX
 };
 
+static const struct
+{
+    int bit_rate;
+    int modem_type;
+    int which;
+    uint8_t dcs_code;
+} fallback_sequence[] =
+{
+    {14400, T30_MODEM_V17_14400,    T30_SUPPORT_V17,    DISBIT6},
+    {12000, T30_MODEM_V17_12000,    T30_SUPPORT_V17,    (DISBIT6 | DISBIT4)},
+    { 9600, T30_MODEM_V17_9600,     T30_SUPPORT_V17,    (DISBIT6 | DISBIT3)},
+    { 9600, T30_MODEM_V29_9600,     T30_SUPPORT_V29,    DISBIT3},
+    { 7200, T30_MODEM_V17_7200,     T30_SUPPORT_V17,    (DISBIT6 | DISBIT4 | DISBIT3)},
+    { 7200, T30_MODEM_V29_7200,     T30_SUPPORT_V29,    (DISBIT4 | DISBIT3)},
+    { 4800, T30_MODEM_V27TER_4800,  T30_SUPPORT_V27TER, DISBIT4},
+    { 2400, T30_MODEM_V27TER_2400,  T30_SUPPORT_V27TER, 0},
+    {    0, 0, 0, 0}
+};
+
 int decode_test = FALSE;
-int ecm_mode = FALSE;
 int rx_bits = 0;
 
 t30_state_t t30_dummy;
@@ -77,6 +96,14 @@ int fast_trained = FAX_NONE;
 
 uint8_t ecm_data[256][260];
 int16_t ecm_len[256];
+
+int line_encoding = T4_COMPRESSION_ITU_T4_2D;
+int x_resolution = T4_X_RESOLUTION_R8;
+int y_resolution = T4_Y_RESOLUTION_STANDARD;
+int image_width = 1728;
+int octets_per_ecm_frame = 256;
+int error_correcting_mode = FALSE;
+int current_fallback = 0;
 
 static void print_frame(const char *io, const uint8_t *fr, int frlen)
 {
@@ -108,7 +135,80 @@ static void print_frame(const char *io, const uint8_t *fr, int frlen)
 }
 /*- End of function --------------------------------------------------------*/
 
-static void hdlc_accept(void *user_data, int ok, const uint8_t *msg, int len)
+static int find_fallback_entry(int dcs_code)
+{
+    int i;
+
+    /* The table is short, and not searched often, so a brain-dead linear scan seems OK */
+    for (i = 0;  fallback_sequence[i].bit_rate;  i++)
+    {
+        if (fallback_sequence[i].dcs_code == dcs_code)
+            break;
+    }
+    if (fallback_sequence[i].bit_rate == 0)
+        return -1;
+    return i;
+}
+/*- End of function --------------------------------------------------------*/
+
+static int check_rx_dcs(const uint8_t *msg, int len)
+{
+    static const int widths[3][4] =
+    {
+        { 864, 1024, 1216, -1}, /* R4 resolution - no longer used in recent versions of T.30 */
+        {1728, 2048, 2432, -1}, /* R8 resolution */
+        {3456, 4096, 4864, -1}  /* R16 resolution */
+    };
+    uint8_t dcs_frame[T30_MAX_DIS_DTC_DCS_LEN];
+
+    /* Check DCS frame from remote */
+    if (len < 6)
+    {
+        printf("Short DCS frame\n");
+        return -1;
+    }
+
+    /* Make a local copy of the message, padded to the maximum possible length with zeros. This allows
+       us to simply pick out the bits, without worrying about whether they were set from the remote side. */
+    if (len > T30_MAX_DIS_DTC_DCS_LEN)
+    {
+        memcpy(dcs_frame, msg, T30_MAX_DIS_DTC_DCS_LEN);
+    }
+    else
+    {
+        memcpy(dcs_frame, msg, len);
+        if (len < T30_MAX_DIS_DTC_DCS_LEN)
+            memset(dcs_frame + len, 0, T30_MAX_DIS_DTC_DCS_LEN - len);
+    }
+
+    octets_per_ecm_frame = (dcs_frame[6] & DISBIT4)  ?  256  :  64;
+    if ((dcs_frame[8] & DISBIT1))
+        y_resolution = T4_Y_RESOLUTION_SUPERFINE;
+    else if (dcs_frame[4] & DISBIT7)
+        y_resolution = T4_Y_RESOLUTION_FINE;
+    else
+        y_resolution = T4_Y_RESOLUTION_STANDARD;
+    image_width = widths[(dcs_frame[8] & DISBIT3)  ?  2  :  1][dcs_frame[5] & (DISBIT2 | DISBIT1)];
+
+    /* Check which compression we will use. */
+    if ((dcs_frame[6] & DISBIT7))
+        line_encoding = T4_COMPRESSION_ITU_T6;
+    else if ((dcs_frame[4] & DISBIT8))
+        line_encoding = T4_COMPRESSION_ITU_T4_2D;
+    else
+        line_encoding = T4_COMPRESSION_ITU_T4_1D;
+    fprintf(stderr, "Selected compression %d\n", line_encoding);
+
+    if ((current_fallback = find_fallback_entry(dcs_frame[4] & (DISBIT6 | DISBIT5 | DISBIT4 | DISBIT3))) < 0)
+        printf("Remote asked for a modem standard we do not support\n");
+    error_correcting_mode = ((dcs_frame[6] & DISBIT3) != 0);
+
+    //v17_rx_restart(&v17, fallback_sequence[fallback_entry].bit_rate, FALSE);
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+static void hdlc_accept(void *user_data, const uint8_t *msg, int len, int ok)
 {
     int type;
     int frame_no;
@@ -147,8 +247,9 @@ static void hdlc_accept(void *user_data, int ok, const uint8_t *msg, int len)
         }
         print_frame("HDLC: ", msg, len);
         type = msg[2] & 0xFE;
-        if (type == T4_FCD)
+        switch (type)
         {
+        case T4_FCD:
             if (len <= 4 + 256)
             {
                 frame_no = msg[3];
@@ -156,6 +257,10 @@ static void hdlc_accept(void *user_data, int ok, const uint8_t *msg, int len)
                 memcpy(&ecm_data[frame_no][0], &msg[4], len - 4);
                 ecm_len[frame_no] = (int16_t) (len - 4);
             }
+            break;
+        case T30_DCS:
+            check_rx_dcs(msg, len);
+            break;
         }
     }
     else
@@ -172,10 +277,10 @@ static void t4_begin(void)
 {
     int i;
 
-    t4_rx_set_rx_encoding(&t4_state, T4_COMPRESSION_ITU_T4_2D);
-    t4_rx_set_x_resolution(&t4_state, T4_X_RESOLUTION_R8);
-    t4_rx_set_y_resolution(&t4_state, T4_Y_RESOLUTION_STANDARD);
-    t4_rx_set_image_width(&t4_state, 1728);
+    t4_rx_set_rx_encoding(&t4_state, line_encoding);
+    t4_rx_set_x_resolution(&t4_state, x_resolution);
+    t4_rx_set_y_resolution(&t4_state, y_resolution);
+    t4_rx_set_image_width(&t4_state, image_width);
 
     t4_rx_start_page(&t4_state);
     t4_up = TRUE;
@@ -189,9 +294,24 @@ static void t4_end(void)
 {
     t4_stats_t stats;
     int i;
+    int j;
+    int k;
 
     if (!t4_up)
         return;
+    if (error_correcting_mode)
+    {
+        for (i = 0;  i < 256;  i++)
+        {
+            for (j = 0;  j < ecm_len[i];  j++)
+            {
+                for (k = 0;  k < 8;  k++)
+                    t4_rx_put_bit(&t4_state, (ecm_data[i][j] >> k) & 1);
+            }
+            fprintf(stderr, "%d", (ecm_len[i] < 0)  ?  0  :  1);
+        }
+        fprintf(stderr, "\n");
+    }
     t4_rx_end_page(&t4_state);
     t4_get_transfer_statistics(&t4_state, &stats);
     fprintf(stderr, "Pages = %d\n", stats.pages_transferred);
@@ -199,9 +319,6 @@ static void t4_end(void)
     fprintf(stderr, "Image resolution = %dx%d\n", stats.x_resolution, stats.y_resolution);
     fprintf(stderr, "Bad rows = %d\n", stats.bad_rows);
     fprintf(stderr, "Longest bad row run = %d\n", stats.longest_bad_row_run);
-    for (i = 0;  i < 256;  i++)
-        printf("%d", (ecm_len[i] < 0)  ?  0  :  1);
-    printf("\n");
     t4_up = FALSE;
 }
 /*- End of function --------------------------------------------------------*/
@@ -239,7 +356,6 @@ static void v21_put_bit(void *user_data, int bit)
 }
 /*- End of function --------------------------------------------------------*/
 
-#if defined(ENABLE_V17)
 static void v17_put_bit(void *user_data, int bit)
 {
     if (bit < 0)
@@ -262,10 +378,7 @@ static void v17_put_bit(void *user_data, int bit)
             fprintf(stderr, "V.17 Carrier down\n");
             t4_end();
             if (fast_trained == FAX_V17_RX)
-            {
                 fast_trained = FAX_NONE;
-                ecm_mode = TRUE;
-            }
             break;
         default:
             fprintf(stderr, "V.17 Eh!\n");
@@ -273,7 +386,7 @@ static void v17_put_bit(void *user_data, int bit)
         }
         return;
     }
-    if (ecm_mode)
+    if (error_correcting_mode)
     {
         hdlc_rx_put_bit(&hdlcrx, bit);
     }
@@ -288,7 +401,6 @@ static void v17_put_bit(void *user_data, int bit)
     //printf("V.17 Rx bit %d - %d\n", rx_bits++, bit);
 }
 /*- End of function --------------------------------------------------------*/
-#endif
 
 static void v29_put_bit(void *user_data, int bit)
 {
@@ -320,8 +432,7 @@ static void v29_put_bit(void *user_data, int bit)
         }
         return;
     }
-
-    if (ecm_mode)
+    if (error_correcting_mode)
     {
         hdlc_rx_put_bit(&hdlcrx, bit);
     }
@@ -366,8 +477,7 @@ static void v27ter_put_bit(void *user_data, int bit)
         }
         return;
     }
-
-    if (ecm_mode)
+    if (error_correcting_mode)
     {
         hdlc_rx_put_bit(&hdlcrx, bit);
     }
@@ -386,25 +496,38 @@ static void v27ter_put_bit(void *user_data, int bit)
 int main(int argc, char *argv[])
 {
     fsk_rx_state_t fsk;
-#if defined(ENABLE_V17)
     v17_rx_state_t v17;
-#endif
     v29_rx_state_t v29;
     v27ter_rx_state_t v27ter;
     int16_t amp[SAMPLES_PER_CHUNK];
     AFfilehandle inhandle;
     int len;
     const char *filename;
-    
+    float x;
+
     filename = "fax_samp.wav";
 
     if (argc > 1)
         filename = argv[1];
 
-    inhandle = afOpenFile(filename, "r", NULL);
-    if (inhandle == AF_NULL_FILEHANDLE)
+    if ((inhandle = afOpenFile(filename, "r", NULL)) == AF_NULL_FILEHANDLE)
     {
         fprintf(stderr, "    Cannot open wave file '%s'\n", filename);
+        exit(2);
+    }
+    if ((x = afGetFrameSize(inhandle, AF_DEFAULT_TRACK, 1)) != 2.0)
+    {
+        printf("    Unexpected frame size in speech file '%s' (%f)\n", filename, x);
+        exit(2);
+    }
+    if ((x = afGetRate(inhandle, AF_DEFAULT_TRACK)) != (float) SAMPLE_RATE)
+    {
+        printf("    Unexpected sample rate in speech file '%s' (%f)\n", filename, x);
+        exit(2);
+    }
+    if ((x = afGetChannels(inhandle, AF_DEFAULT_TRACK)) != 1.0)
+    {
+        printf("    Unexpected number of channels in speech file '%s' (%f)\n", filename, x);
         exit(2);
     }
     memset(&t30_dummy, 0, sizeof(t30_dummy));
@@ -413,25 +536,30 @@ int main(int argc, char *argv[])
 
     hdlc_rx_init(&hdlcrx, FALSE, TRUE, 5, hdlc_accept, NULL);
     fsk_rx_init(&fsk, &preset_fsk_specs[FSK_V21CH2], TRUE, v21_put_bit, NULL);
-#if defined(ENABLE_V17)
     v17_rx_init(&v17, 14400, v17_put_bit, NULL);
-#endif
     v29_rx_init(&v29, 9600, v29_put_bit, NULL);
+    //v29_rx_init(&v29, 7200, v29_put_bit, NULL);
     v27ter_rx_init(&v27ter, 4800, v27ter_put_bit, NULL);
-    fsk_rx_signal_cutoff(&fsk, -45.0);
-#if defined(ENABLE_V17)
-    v17_rx_signal_cutoff(&v17, -45.0);
-#endif
-    v29_rx_signal_cutoff(&v29, -45.0);
+    fsk_rx_signal_cutoff(&fsk, -45.5);
+    v17_rx_signal_cutoff(&v17, -45.5);
+    v29_rx_signal_cutoff(&v29, -45.5);
     v27ter_rx_signal_cutoff(&v27ter, -40.0);
 
-    //span_log_init(&v29.logging, SPAN_LOG_FLOW, NULL);
-    //span_log_set_protocol(&v29.logging, "V.29");
-    //span_log_set_level(&v29.logging, SPAN_LOG_SHOW_SEVERITY | SPAN_LOG_SHOW_PROTOCOL | SPAN_LOG_SHOW_TAG | SPAN_LOG_FLOW);
+    span_log_init(&v17.logging, SPAN_LOG_FLOW, NULL);
+    span_log_set_protocol(&v17.logging, "V.17");
+    span_log_set_level(&v17.logging, SPAN_LOG_SHOW_SEVERITY | SPAN_LOG_SHOW_PROTOCOL | SPAN_LOG_SHOW_TAG | SPAN_LOG_FLOW);
 
-    if (t4_rx_init(&t4_state, "fax_decode.tif", T4_COMPRESSION_ITU_T4_2D))
+    span_log_init(&v29.logging, SPAN_LOG_FLOW, NULL);
+    span_log_set_protocol(&v29.logging, "V.29");
+    span_log_set_level(&v29.logging, SPAN_LOG_SHOW_SEVERITY | SPAN_LOG_SHOW_PROTOCOL | SPAN_LOG_SHOW_TAG | SPAN_LOG_FLOW);
+
+    span_log_init(&v27ter.logging, SPAN_LOG_FLOW, NULL);
+    span_log_set_protocol(&v27ter.logging, "V.27ter");
+    span_log_set_level(&v27ter.logging, SPAN_LOG_SHOW_SEVERITY | SPAN_LOG_SHOW_PROTOCOL | SPAN_LOG_SHOW_TAG | SPAN_LOG_FLOW);
+
+    if (t4_rx_init(&t4_state, "fax_decode.tif", T4_COMPRESSION_ITU_T4_2D) == NULL)
     {
-       fprintf(stderr, "Failed to init\n");
+        fprintf(stderr, "Failed to init\n");
         exit(0);
     }
         
@@ -441,9 +569,7 @@ int main(int argc, char *argv[])
         if (len < SAMPLES_PER_CHUNK)
             break;
         fsk_rx(&fsk, amp, len);
-#if defined(ENABLE_V17)
         v17_rx(&v17, amp, len);
-#endif
         v29_rx(&v29, amp, len);
         v27ter_rx(&v27ter, amp, len);
     }

@@ -23,7 +23,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: fax.c,v 1.52 2006/11/19 14:07:24 steveu Exp $
+ * $Id: fax.c,v 1.61 2007/11/30 12:20:33 steveu Exp $
  */
 
 /*! \file */
@@ -48,7 +48,6 @@
 #if defined(LOG_FAX_AUDIO)
 #include <unistd.h>
 #endif
-
 #include <tiffio.h>
 
 #include "spandsp/telephony.h"
@@ -66,10 +65,8 @@
 #include "spandsp/v29tx.h"
 #include "spandsp/v27ter_rx.h"
 #include "spandsp/v27ter_tx.h"
-#if defined(ENABLE_V17)
 #include "spandsp/v17rx.h"
 #include "spandsp/v17tx.h"
-#endif
 #include "spandsp/t4.h"
 
 #include "spandsp/t30_fcf.h"
@@ -89,13 +86,21 @@ static void fax_send_hdlc(void *user_data, const uint8_t *msg, int len)
 }
 /*- End of function --------------------------------------------------------*/
 
-static int dummy_rx(void *s, const int16_t amp[], int len)
+static void hdlc_underflow_handler(void *user_data)
+{
+    t30_state_t *s;
+
+    s = (t30_state_t *) user_data;
+    t30_front_end_status(s, T30_FRONT_END_SEND_STEP_COMPLETE);
+}
+/*- End of function --------------------------------------------------------*/
+
+static int dummy_rx(void *user_data, const int16_t amp[], int len)
 {
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
-#if defined(ENABLE_V17)
 static int early_v17_rx(void *user_data, const int16_t amp[], int len)
 {
     fax_state_t *s;
@@ -111,10 +116,9 @@ static int early_v17_rx(void *user_data, const int16_t amp[], int len)
         s->rx_handler = (span_rx_handler_t *) &v17_rx;
         s->rx_user_data = &(s->v17rx);
     }
-    return len;
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
-#endif
 
 static int early_v27ter_rx(void *user_data, const int16_t amp[], int len)
 {
@@ -131,7 +135,7 @@ static int early_v27ter_rx(void *user_data, const int16_t amp[], int len)
         s->rx_handler = (span_rx_handler_t *) &v27ter_rx;
         s->rx_user_data = &(s->v27ter_rx);
     }
-    return len;
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -150,7 +154,7 @@ static int early_v29_rx(void *user_data, const int16_t amp[], int len)
         s->rx_handler = (span_rx_handler_t *) &v29_rx;
         s->rx_user_data = &(s->v29rx);
     }
-    return len;
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -166,7 +170,7 @@ int fax_rx(fax_state_t *s, int16_t *amp, int len)
         amp[i] = dc_restore(&(s->dc_restore), amp[i]);
     s->rx_handler(s->rx_user_data, amp, len);
     t30_timer_update(&(s->t30_state), len);
-    return  0;
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -204,7 +208,7 @@ int fax_tx(fax_state_t *s, int16_t *amp, int max_len)
         {
             /* Allow for a change of tx handler within a block */
             if (set_next_tx_type(s)  &&  s->current_tx_type != T30_MODEM_NONE  &&  s->current_tx_type != T30_MODEM_DONE)
-                t30_send_complete(&(s->t30_state));
+                t30_front_end_status(&(s->t30_state), T30_FRONT_END_SEND_COMPLETE);
             if (!s->transmit)
             {
                 if (s->transmit_on_idle)
@@ -266,6 +270,7 @@ static void fax_set_rx_type(void *user_data, int type, int short_train, int use_
         if (s->flush_handler)
             s->flush_handler(s, s->flush_user_data, 3);
         fsk_rx_init(&(s->v21rx), &preset_fsk_specs[FSK_V21CH2], TRUE, (put_bit_func_t) hdlc_rx_put_bit, put_bit_user_data);
+        fsk_rx_signal_cutoff(&(s->v21rx), -45.5);
         s->rx_handler = (span_rx_handler_t *) &fsk_rx;
         s->rx_user_data = &(s->v21rx);
         break;
@@ -293,7 +298,6 @@ static void fax_set_rx_type(void *user_data, int type, int short_train, int use_
         s->rx_handler = (span_rx_handler_t *) &early_v29_rx;
         s->rx_user_data = s;
         break;
-#if defined(ENABLE_V17)
     case T30_MODEM_V17_7200:
         v17_rx_restart(&(s->v17rx), 7200, short_train);
         v17_rx_set_put_bit(&(s->v17rx), put_bit_func, put_bit_user_data);
@@ -318,7 +322,6 @@ static void fax_set_rx_type(void *user_data, int type, int short_train, int use_
         s->rx_handler = (span_rx_handler_t *) &early_v17_rx;
         s->rx_user_data = s;
         break;
-#endif
     case T30_MODEM_DONE:
         span_log(&s->logging, SPAN_LOG_FLOW, "FAX exchange complete\n");
     default:
@@ -402,7 +405,7 @@ static void fax_set_tx_type(void *user_data, int type, int short_train, int use_
     case T30_MODEM_V21:
         fsk_tx_init(&(s->v21tx), &preset_fsk_specs[FSK_V21CH2], get_bit_func, get_bit_user_data);
         /* The spec says 1s +-15% of preamble. So, the minimum is 32 octets. */
-        hdlc_tx_preamble(&(s->hdlctx), 32);
+        hdlc_tx_flags(&(s->hdlctx), 32);
         /* Pause before switching from phase C, as per T.30 5.3.2.2. If we omit this, the receiver
            might not see the carrier fall between the high speed and low speed sections. In practice,
            a 75ms gap before any V.21 transmission is harmless, adds little to the overall length of
@@ -422,7 +425,7 @@ static void fax_set_tx_type(void *user_data, int type, int short_train, int use_
         s->tx_user_data = &(s->silence_gen);
         s->next_tx_handler = (span_tx_handler_t *) &v27ter_tx;
         s->next_tx_user_data = &(s->v27ter_tx);
-        hdlc_tx_preamble(&(s->hdlctx), 60);
+        hdlc_tx_flags(&(s->hdlctx), 60);
         s->transmit = TRUE;
         break;
     case T30_MODEM_V27TER_4800:
@@ -433,7 +436,7 @@ static void fax_set_tx_type(void *user_data, int type, int short_train, int use_
         s->tx_user_data = &(s->silence_gen);
         s->next_tx_handler = (span_tx_handler_t *) &v27ter_tx;
         s->next_tx_user_data = &(s->v27ter_tx);
-        hdlc_tx_preamble(&(s->hdlctx), 120);
+        hdlc_tx_flags(&(s->hdlctx), 120);
         s->transmit = TRUE;
         break;
     case T30_MODEM_V29_7200:
@@ -444,7 +447,7 @@ static void fax_set_tx_type(void *user_data, int type, int short_train, int use_
         s->tx_user_data = &(s->silence_gen);
         s->next_tx_handler = (span_tx_handler_t *) &v29_tx;
         s->next_tx_user_data = &(s->v29tx);
-        hdlc_tx_preamble(&(s->hdlctx), 180);
+        hdlc_tx_flags(&(s->hdlctx), 180);
         s->transmit = TRUE;
         break;
     case T30_MODEM_V29_9600:
@@ -455,10 +458,9 @@ static void fax_set_tx_type(void *user_data, int type, int short_train, int use_
         s->tx_user_data = &(s->silence_gen);
         s->next_tx_handler = (span_tx_handler_t *) &v29_tx;
         s->next_tx_user_data = &(s->v29tx);
-        hdlc_tx_preamble(&(s->hdlctx), 240);
+        hdlc_tx_flags(&(s->hdlctx), 240);
         s->transmit = TRUE;
         break;
-#if defined(ENABLE_V17)
     case T30_MODEM_V17_7200:
         silence_gen_alter(&(s->silence_gen), ms_to_samples(75));
         v17_tx_restart(&(s->v17tx), 7200, s->use_tep, short_train);
@@ -467,7 +469,7 @@ static void fax_set_tx_type(void *user_data, int type, int short_train, int use_
         s->tx_user_data = &(s->silence_gen);
         s->next_tx_handler = (span_tx_handler_t *) &v17_tx;
         s->next_tx_user_data = &(s->v17tx);
-        hdlc_tx_preamble(&(s->hdlctx), 180);
+        hdlc_tx_flags(&(s->hdlctx), 180);
         s->transmit = TRUE;
         break;
     case T30_MODEM_V17_9600:
@@ -478,7 +480,7 @@ static void fax_set_tx_type(void *user_data, int type, int short_train, int use_
         s->tx_user_data = &(s->silence_gen);
         s->next_tx_handler = (span_tx_handler_t *) &v17_tx;
         s->next_tx_user_data = &(s->v17tx);
-        hdlc_tx_preamble(&(s->hdlctx), 240);
+        hdlc_tx_flags(&(s->hdlctx), 240);
         s->transmit = TRUE;
         break;
     case T30_MODEM_V17_12000:
@@ -489,7 +491,7 @@ static void fax_set_tx_type(void *user_data, int type, int short_train, int use_
         s->tx_user_data = &(s->silence_gen);
         s->next_tx_handler = (span_tx_handler_t *) &v17_tx;
         s->next_tx_user_data = &(s->v17tx);
-        hdlc_tx_preamble(&(s->hdlctx), 300);
+        hdlc_tx_flags(&(s->hdlctx), 300);
         s->transmit = TRUE;
         break;
     case T30_MODEM_V17_14400:
@@ -500,10 +502,9 @@ static void fax_set_tx_type(void *user_data, int type, int short_train, int use_
         s->tx_user_data = &(s->silence_gen);
         s->next_tx_handler = (span_tx_handler_t *) &v17_tx;
         s->next_tx_user_data = &(s->v17tx);
-        hdlc_tx_preamble(&(s->hdlctx), 360);
+        hdlc_tx_flags(&(s->hdlctx), 360);
         s->transmit = TRUE;
         break;
-#endif
     case T30_MODEM_DONE:
         span_log(&s->logging, SPAN_LOG_FLOW, "FAX exchange complete\n");
         /* Fall through */
@@ -531,8 +532,14 @@ void fax_set_tep_mode(fax_state_t *s, int use_tep)
 }
 /*- End of function --------------------------------------------------------*/
 
-int fax_init(fax_state_t *s, int calling_party)
+fax_state_t *fax_init(fax_state_t *s, int calling_party)
 {
+    if (s == NULL)
+    {
+        if ((s = (fax_state_t *) malloc(sizeof(*s))) == NULL)
+            return NULL;
+    }
+
     memset(s, 0, sizeof(*s));
     span_log_init(&s->logging, SPAN_LOG_NONE, NULL);
     span_log_set_protocol(&s->logging, "FAX");
@@ -545,20 +552,15 @@ int fax_init(fax_state_t *s, int calling_party)
              fax_send_hdlc,
              (void *) s);
     t30_set_supported_modems(&(s->t30_state),
-#if defined(ENABLE_V17)
-                             T30_SUPPORT_V27TER | T30_SUPPORT_V29 | T30_SUPPORT_V17);
-#else    
                              T30_SUPPORT_V27TER | T30_SUPPORT_V29);
-#endif
     hdlc_rx_init(&(s->hdlcrx), FALSE, FALSE, 5, t30_hdlc_accept, &(s->t30_state));
     fsk_rx_init(&(s->v21rx), &preset_fsk_specs[FSK_V21CH2], TRUE, (put_bit_func_t) hdlc_rx_put_bit, &(s->hdlcrx));
-    hdlc_tx_init(&(s->hdlctx), FALSE, 2, FALSE, t30_send_complete, &(s->t30_state));
+    fsk_rx_signal_cutoff(&(s->v21rx), -45.5);
+    hdlc_tx_init(&(s->hdlctx), FALSE, 2, FALSE, hdlc_underflow_handler, &(s->t30_state));
     s->first_tx_hdlc_frame = TRUE;
     fsk_tx_init(&(s->v21tx), &preset_fsk_specs[FSK_V21CH2], (get_bit_func_t) hdlc_tx_get_bit, &(s->hdlctx));
-#if defined(ENABLE_V17)
     v17_rx_init(&(s->v17rx), 14400, t30_non_ecm_put_bit, &(s->t30_state));
     v17_tx_init(&(s->v17tx), 14400, s->use_tep, t30_non_ecm_get_bit, &(s->t30_state));
-#endif
     v29_rx_init(&(s->v29rx), 9600, t30_non_ecm_put_bit, &(s->t30_state));
     v29_rx_signal_cutoff(&(s->v29rx), -45.5);
     v29_tx_init(&(s->v29tx), 9600, s->use_tep, t30_non_ecm_get_bit, &(s->t30_state));
@@ -576,7 +578,7 @@ int fax_init(fax_state_t *s, int calling_party)
         time(&now);
         tm = localtime(&now);
         sprintf(buf,
-                "/tmp/fax-rx-audio-%x-%02d%02d%02d%02d%02d%02d",
+                "/tmp/fax-rx-audio-%p-%02d%02d%02d%02d%02d%02d",
                 s,
                 tm->tm_year%100,
                 tm->tm_mon + 1,
@@ -586,7 +588,7 @@ int fax_init(fax_state_t *s, int calling_party)
                 tm->tm_sec);
         s->fax_audio_rx_log = open(buf, O_CREAT | O_TRUNC | O_WRONLY, 0666);
         sprintf(buf,
-                "/tmp/fax-tx-audio-%x-%02d%02d%02d%02d%02d%02d",
+                "/tmp/fax-tx-audio-%p-%02d%02d%02d%02d%02d%02d",
                 s,
                 tm->tm_year%100,
                 tm->tm_mon + 1,
@@ -597,13 +599,21 @@ int fax_init(fax_state_t *s, int calling_party)
         s->fax_audio_tx_log = open(buf, O_CREAT | O_TRUNC | O_WRONLY, 0666);
     }
 #endif
-    return 0;
+    return s;
 }
 /*- End of function --------------------------------------------------------*/
 
 int fax_release(fax_state_t *s)
 {
     t30_release(&s->t30_state);
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+int fax_free(fax_state_t *s)
+{
+    t30_release(&s->t30_state);
+    free(s);
     return 0;
 }
 /*- End of function --------------------------------------------------------*/

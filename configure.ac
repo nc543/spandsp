@@ -16,7 +16,7 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #
-# $Id: configure.ac,v 1.27 2007/02/10 11:54:57 steveu Exp $
+# $Id: configure.ac,v 1.38 2007/11/10 11:14:56 steveu Exp $
 
 # @start 1
 
@@ -40,7 +40,7 @@ AC_CACHE_CHECK([for _AC_LANG compiler vendor], ax_cv_[]_AC_LANG_ABBREV[]_compile
 
 SPANDSP_MAJOR_VERSION=0
 SPANDSP_MINOR_VERSION=0
-SPANDSP_MICRO_VERSION=3
+SPANDSP_MICRO_VERSION=4
 
 SPANDSP_LT_CURRENT=0
 SPANDSP_LT_REVISION=2
@@ -111,7 +111,7 @@ else
   fi
 
   CXX=${CXX-"c++"}
-  CFLAGS=${CFLAGS-"-g"}
+  CFLAGS=${CFLAGS-"-g -O2"}
   CXXFLAGS=${CXXFLAGS-"-g -O2"}
 fi
 
@@ -124,11 +124,12 @@ AC_CHECK_TYPES(long double)
 
 AC_TYPE_SIGNAL
 
-AC_ARG_ENABLE(doc,     [  --enable-doc      Build the documentation])
-AC_ARG_ENABLE(tests,   [  --enable-tests    Build the test programs])
-AC_ARG_ENABLE(itutests,[  --enable-itutests Build TIFF test files for some ITU test images])
-AC_ARG_ENABLE(mmx,     [  --enable-mmx      Enable MMX support])
-AC_ARG_ENABLE(sse,     [  --enable-sse      Enable SSE support])
+AC_ARG_ENABLE(doc,          [  --enable-doc         Build the documentation])
+AC_ARG_ENABLE(tests,        [  --enable-tests       Build the test programs])
+AC_ARG_ENABLE(itutests,     [  --enable-itutests    Build TIFF test files for some ITU test images])
+AC_ARG_ENABLE(mmx,          [  --enable-mmx         Enable MMX support])
+AC_ARG_ENABLE(sse,          [  --enable-sse         Enable SSE support])
+AC_ARG_ENABLE(fixed_point,  [  --enable-fixed-point Enable fixed point support])
 
 AC_FUNC_ERROR_AT_LINE
 AC_FUNC_VPRINTF
@@ -139,9 +140,6 @@ AC_FUNC_SELECT_ARGTYPES
 
 AC_CHECK_FUNCS([memmove])
 AC_CHECK_FUNCS([memset])
-AC_CHECK_FUNCS([pow])
-AC_CHECK_FUNCS([sqrt])
-AC_CHECK_FUNCS([rint])
 AC_CHECK_FUNCS([select])
 AC_CHECK_FUNCS([strcasecmp])
 AC_CHECK_FUNCS([strchr])
@@ -157,14 +155,15 @@ AC_HEADER_TIME
 
 # Check for header files.
 AC_CHECK_HEADERS([socket.h])
-AC_CHECK_HEADERS([inttypes.h])
+AC_CHECK_HEADERS([inttypes.h], [INSERT_INTTYPES_HEADER="#include <inttypes.h>"])
+AC_CHECK_HEADERS([stdint.h], [INSERT_STDINT_HEADER="#include <stdint.h>"])
 AC_CHECK_HEADERS([unistd.h])
 AC_CHECK_HEADERS([stdlib.h])
 AC_CHECK_HEADERS([string.h])
 AC_CHECK_HEADERS([strings.h])
 AC_CHECK_HEADERS([malloc.h])
-AC_CHECK_HEADERS([tgmath.h])
-AC_CHECK_HEADERS([math.h])
+AC_CHECK_HEADERS([tgmath.h], [INSERT_TGMATH_HEADER="#include <tgmath.h>"])
+AC_CHECK_HEADERS([math.h], [INSERT_MATH_HEADER="#include <math.h>"])
 AC_CHECK_HEADERS([float.h])
 AC_CHECK_HEADERS([fcntl.h])
 AC_CHECK_HEADERS([sys/time.h])
@@ -248,6 +247,8 @@ AC_CHECK_LIB([Xext], [XextCreateExtension], TESTLIBS="$TESTLIBS -lXext",, $TESTL
 AC_CHECK_LIB([X11], [XOpenDisplay], TESTLIBS="$TESTLIBS -lX11",, $TESTLIBS)
 AC_CHECK_LIB([tiff], [TIFFOpen], , AC_MSG_ERROR("Can't build without libtiff (does your system require a libtiff-devel package?)"), -lm)
 AC_CHECK_LIB([m], [cos])
+AC_CHECK_LIB([m], [pow])
+AC_CHECK_LIB([m], [sqrt])
 AC_CHECK_LIB([xml2], [xmlParseFile], [AC_DEFINE([HAVE_LIBXML2], [1], [Define to 1 if you have the 'libxml2' library (-lxml2).]) TESTLIBS="$TESTLIBS -lxml2"])
 if test -n "$enable_tests" ; then
     AC_LANG([C++])
@@ -265,7 +266,7 @@ fi
 
 case "${ax_cv_c_compiler_vendor}" in
 gnu)
-    COMP_VENDOR_CFLAGS="-O2 -g -std=gnu99 -Wall -Wunused-variable -Wwrite-strings -Wstrict-prototypes -Wmissing-prototypes"
+    COMP_VENDOR_CFLAGS="-std=gnu99 -ffast-math -Wall -Wunused-variable -Wwrite-strings -Wstrict-prototypes -Wmissing-prototypes"
     if test "$enable_sse" = "yes" ; then
         COMP_VENDOR_CFLAGS="-msse $COMP_VENDOR_CFLAGS"
     fi
@@ -274,7 +275,7 @@ gnu)
     fi
     ;;
 *)
-    COMP_VENDOR_CFLAGS="-O2 -g -std=c99 -Wall -Wunused-variable -Wwrite-strings -Wstrict-prototypes -Wmissing-prototypes"
+    COMP_VENDOR_CFLAGS="-std=c99 -Wall -Wunused-variable -Wwrite-strings -Wstrict-prototypes -Wmissing-prototypes"
     ;;
 esac
 
@@ -285,16 +286,52 @@ AM_CONDITIONAL([COND_TESTS], [test "$enable_tests" = yes])
 AM_CONDITIONAL([COND_ITUTESTS], [test "$enable_itutests" = yes])
 AM_CONDITIONAL([COND_MMX], [test "$enable_mmx" = yes])
 AM_CONDITIONAL([COND_SSE], [test "$enable_sse" = yes])
+if test "$enable_fixed_point" = "yes" ; then
+    AC_DEFINE([SPANDSP_USE_FIXED_POINT], [1], [Enable fixed point processing, where possible, instead of floating point])
+    SPANDSP_USE_FIXED_POINT="#define SPANDSP_USE_FIXED_POINT 1"
+else
+#
+# So far we deal with the embedded ARM, Blackfin, MIPS, TI DSP and XScale processors as
+# things which lack fast hardware floating point.
+#
+# Other candidates would be the small embedded Power PCs.
+#
+    case $basic_machine in
+	      arc | arm | arm[bl]e | arme[lb] | armv[2345] | armv[345][lb] \
+	    | bfin \
+	    | mips | mipsbe | mipseb | mipsel | mipsle \
+	    | tic54x | c54x* | tic55x | c55x* | tic6x | c6x* \
+	    | xscale | xscalee[bl] \
+	    | arm-*  | armbe-* | armle-* | armeb-* | armv*-* \
+	    | bfin-* \
+	    | mips-* | mipsbe-* | mipseb-* | mipsel-* | mipsle-* \
+	    | tic30-* | tic4x-* | tic54x-* | tic55x-* | tic6x-* | tic80-* \
+	    | xscale-* | xscalee[bl]-* )
+        AC_DEFINE([SPANDSP_USE_FIXED_POINT], [1], [Enable fixed point processing, where possible, instead of floating point])
+        SPANDSP_USE_FIXED_POINT="#define SPANDSP_USE_FIXED_POINT 1"
+        ;;
+    *)
+        SPANDSP_USE_FIXED_POINT="#undef SPANDSP_USE_FIXED_POINT"
+        ;;
+    esac
+fi
 
-AC_SUBST(TESTLIBS)
-AC_SUBST(COMP_VENDOR_CFLAGS)
 AC_SUBST(CC_FOR_BUILD)
+AC_SUBST(COMP_VENDOR_CFLAGS)
+AC_SUBST(TESTLIBS)
+AC_SUBST(SPANDSP_USE_FIXED_POINT)
+AC_SUBST(INSERT_INTTYPES_HEADER)
+AC_SUBST(INSERT_STDINT_HEADER)
+AC_SUBST(INSERT_TGMATH_HEADER)
+AC_SUBST(INSERT_MATH_HEADER)
 
 AC_CONFIG_FILES([Makefile
                  doc/Makefile
                  itutests/Makefile
                  itutests/fax/Makefile
                  src/Makefile
+                 src/spandsp.h
+                 spandsp-sim/Makefile
                  tests/Makefile
                  spandsp.spec])
 

@@ -23,7 +23,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: modem_connect_tones.c,v 1.9 2007/03/03 10:40:33 steveu Exp $
+ * $Id: modem_connect_tones.c,v 1.17 2007/11/30 12:20:33 steveu Exp $
  */
  
 /*! \file */
@@ -42,10 +42,15 @@
 #endif
 
 #include "spandsp/telephony.h"
+#include "spandsp/logging.h"
+#include "spandsp/complex.h"
 #include "spandsp/dds.h"
 #include "spandsp/tone_detect.h"
 #include "spandsp/tone_generate.h"
 #include "spandsp/super_tone_rx.h"
+#include "spandsp/power_meter.h"
+#include "spandsp/async.h"
+#include "spandsp/fsk.h"
 #include "spandsp/modem_connect_tones.h"
 
 int modem_connect_tones_tx(modem_connect_tones_tx_state_t *s,
@@ -94,6 +99,11 @@ modem_connect_tones_tx_state_t *modem_connect_tones_tx_init(modem_connect_tones_
 {
     tone_gen_descriptor_t tone_desc;
 
+    if (s == NULL)
+    {
+        if ((s = (modem_connect_tones_tx_state_t *) malloc(sizeof(*s))) == NULL)
+            return NULL;
+    }
     s->tone_type = tone_type;
     switch (s->tone_type)
     {
@@ -142,6 +152,81 @@ modem_connect_tones_tx_state_t *modem_connect_tones_tx_init(modem_connect_tones_
 }
 /*- End of function --------------------------------------------------------*/
 
+int modem_connect_tones_tx_free(modem_connect_tones_tx_state_t *s)
+{
+    free(s);
+    return 0;
+}
+/*- End of function --------------------------------------------------------*/
+
+static void v21_put_bit(void *user_data, int bit)
+{
+    modem_connect_tones_rx_state_t *s;
+    int x;
+
+    s = (modem_connect_tones_rx_state_t *) user_data;
+    if (bit < 0)
+    {
+        /* Special conditions. */
+        switch (bit)
+        {
+        case PUTBIT_CARRIER_DOWN:
+            if (s->preamble_on)
+            {
+                if (s->tone_callback)
+                    s->tone_callback(s->callback_data, FALSE, -99, 0);
+            }
+            /* Fall through */
+        case PUTBIT_CARRIER_UP:
+            s->one_zero_weight[0] = 0;
+            s->one_zero_weight[1] = 0;
+            s->odd_even = 0;
+            s->preamble_on = FALSE;
+            break;
+        }
+        return;
+    }
+    /* Look for enough FAX V.21 message preamble (101010...) to be sure we are really
+       seeing preamble, and declare the signal to be present. Do this is a fault tolerant
+       manner, so we don't get problems with one or two bad bits in the stream. */
+    /* We leaky integrate occurances of 010 and 101, and use a threshold such that only a
+       transition density approaching 100% can cause detection to be declared. */
+    x = (bit << 1) - 1;
+    s->one_zero_weight[s->odd_even] += ((x << 12) - s->one_zero_weight[s->odd_even]) >> 5;
+    s->odd_even ^= 1;
+    //printf("Preamble weights %d %d, bit %d\n", s->one_zero_weight[0], s->one_zero_weight[1], bit);
+    if (!s->preamble_on)
+    {
+        /* This threshold turns on after about 50 bits of preamble, starting from zero. This
+           is a short enough delay to give the system responsiveness we need, and long
+           enough to pass our talk-off tests. */
+        /* We want a pair of fairly well balanced responses, in opposite directions */
+        x = abs(s->one_zero_weight[0] - s->one_zero_weight[1]);
+        if (x > 4400  &&  x > 4*abs(s->one_zero_weight[0] + s->one_zero_weight[1]))
+        {
+            if (s->tone_callback)
+                s->tone_callback(s->callback_data, TRUE, -13, 0);
+            else
+                s->hit = TRUE;
+            s->preamble_on = TRUE;
+        }
+    }
+    else
+    {
+        /* The timing of the end of preamble indication is not too important. This
+           threshold gives a turn off time for random data following the preamble
+           which is not too different from turn on time. */
+        x = abs(s->one_zero_weight[0] - s->one_zero_weight[1]);
+        if (x < 2000  ||  x < 2*abs(s->one_zero_weight[0] + s->one_zero_weight[1]))
+        {
+            if (s->tone_callback)
+                s->tone_callback(s->callback_data, FALSE, -99, 0);
+            s->preamble_on = FALSE;
+        }
+    }
+}
+/*- End of function --------------------------------------------------------*/
+
 int modem_connect_tones_rx(modem_connect_tones_rx_state_t *s, const int16_t amp[], int len)
 {
     int i;
@@ -176,7 +261,7 @@ int modem_connect_tones_rx(modem_connect_tones_rx_state_t *s, const int16_t amp[
                     if (++s->tone_cycle_duration >= ms_to_samples(415))
                     {
                         if (s->tone_callback)
-                            s->tone_callback(s->callback_data, TRUE, rintf(log10f(s->channel_level/32768.0f)*20.0f + DBM0_MAX_POWER + 0.8f));
+                            s->tone_callback(s->callback_data, TRUE, rintf(log10f(s->channel_level/32768.0f)*20.0f + DBM0_MAX_POWER + 0.8f), 0);
                         else
                             s->hit = TRUE;
                         s->tone_present = TRUE;
@@ -213,7 +298,7 @@ int modem_connect_tones_rx(modem_connect_tones_rx_state_t *s, const int16_t amp[
                     if (++s->tone_cycle_duration >= ms_to_samples(500))
                     {
                         if (s->tone_callback)
-                            s->tone_callback(s->callback_data, TRUE, rintf(log10f(s->channel_level/32768.0f)*20.0f + DBM0_MAX_POWER + 0.8f));
+                            s->tone_callback(s->callback_data, TRUE, rintf(log10f(s->channel_level/32768.0f)*20.0f + DBM0_MAX_POWER + 0.8f), 0);
                         else
                             s->hit = TRUE;
                         s->tone_present = TRUE;
@@ -225,6 +310,9 @@ int modem_connect_tones_rx(modem_connect_tones_rx_state_t *s, const int16_t amp[
                 s->tone_cycle_duration = 0;
             }
         }
+        /* Also look for V.21 preamble, as a lot of machines don't send the 2100Hz burst, or
+           it might not be seen all the way through the channel, due to switching delays. */
+        fsk_rx(&(s->v21rx), amp, len);
         break;
     case MODEM_CONNECT_TONES_EC_DISABLE:
     case MODEM_CONNECT_TONES_EC_DISABLE_MOD:
@@ -264,7 +352,7 @@ int modem_connect_tones_rx(modem_connect_tones_rx_state_t *s, const int16_t amp[
                             if (++s->good_cycles > 2)
                             {
                                 if (s->tone_callback)
-                                    s->tone_callback(s->callback_data, TRUE, rintf(log10f(s->channel_level/32768.0f)*20.0f + DBM0_MAX_POWER + 0.8f));
+                                    s->tone_callback(s->callback_data, TRUE, rintf(log10f(s->channel_level/32768.0f)*20.0f + DBM0_MAX_POWER + 0.8f), 0);
                                 else
                                     s->hit = TRUE;
                             }
@@ -306,6 +394,12 @@ modem_connect_tones_rx_state_t *modem_connect_tones_rx_init(modem_connect_tones_
                                                             tone_report_func_t tone_callback,
                                                             void *user_data)
 {
+    if (s == NULL)
+    {
+        if ((s = (modem_connect_tones_rx_state_t *) malloc(sizeof(*s))) == NULL)
+            return NULL;
+    }
+
     s->tone_type = tone_type;
     s->channel_level = 0;
     s->notch_level = 0;    
@@ -317,7 +411,20 @@ modem_connect_tones_rx_state_t *modem_connect_tones_rx_init(modem_connect_tones_
     s->callback_data = user_data;
     s->z1 = 0.0f;
     s->z2 = 0.0f;
+    fsk_rx_init(&(s->v21rx), &preset_fsk_specs[FSK_V21CH2], TRUE, v21_put_bit, s);
+    fsk_rx_signal_cutoff(&(s->v21rx), -45.5);
+    s->one_zero_weight[0] = 0;
+    s->one_zero_weight[1] = 0;
+    s->odd_even = 0;
+    s->preamble_on = FALSE;
     return s;
+}
+/*- End of function --------------------------------------------------------*/
+
+int modem_connect_tones_rx_free(modem_connect_tones_rx_state_t *s)
+{
+    free(s);
+    return 0;
 }
 /*- End of function --------------------------------------------------------*/
 /*- End of file ------------------------------------------------------------*/

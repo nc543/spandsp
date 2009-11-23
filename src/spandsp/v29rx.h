@@ -22,13 +22,13 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: v29rx.h,v 1.43 2007/04/05 19:20:50 steveu Exp $
+ * $Id: v29rx.h,v 1.47 2007/11/30 12:20:36 steveu Exp $
  */
 
 /*! \file */
 
-#if !defined(_SPANDSP_V29RX_H_)
-#define _SPANDSP_V29RX_H_
+#if !defined(_V29RX_H_)
+#define _V29RX_H_
 
 /*! \page v29rx_page The V.29 receiver
 \section v29rx_page_sec_1 What does it do?
@@ -150,7 +150,11 @@ typedef struct
     void *qam_user_data;
 
     /*! \brief The route raised cosine (RRC) pulse shaping filter buffer. */
+#if defined(SPANDSP_USE_FIXED_POINT)
+    int16_t rrc_filter[2*V29_RX_FILTER_STEPS];
+#else
     float rrc_filter[2*V29_RX_FILTER_STEPS];
+#endif
     /*! \brief Current offset into the RRC pulse shaping filter buffer. */
     int rrc_filter_step;
 
@@ -158,12 +162,16 @@ typedef struct
     unsigned int scramble_reg;
     /*! \brief The register for the training scrambler. */
     uint8_t training_scramble_reg;
-    int in_training;
+    /*! \brief The section of the training data we are currently in. */
+    int training_stage;
     int training_cd;
     int training_count;
     float training_error;
-    int carrier_present;
+    /*! \brief The value of the last signal sample, using the a simple HPF for signal power estimation. */
     int16_t last_sample;
+    /*! \brief >0 if a signal above the minimum is present. It may or may not be a V.29 signal. */
+    int signal_present;
+
     /*! \brief TRUE if the previous trained values are to be reused. */
     int old_train;
 
@@ -235,11 +243,11 @@ v29_rx_state_t *v29_rx_init(v29_rx_state_t *s, int rate, put_bit_func_t put_bit,
     \return 0 for OK, -1 for bad parameter */
 int v29_rx_restart(v29_rx_state_t *s, int rate, int old_train);
 
-/*! Release a V.29 modem receive context.
-    \brief Release a V.29 modem receive context.
+/*! Free a V.29 modem receive context.
+    \brief Free a V.29 modem receive context.
     \param s The modem context.
     \return 0 for OK */
-int v29_rx_release(v29_rx_state_t *s);
+int v29_rx_free(v29_rx_state_t *s);
 
 /*! Change the put_bit function associated with a V.29 modem receive context.
     \brief Change the put_bit function associated with a V.29 modem receive context.

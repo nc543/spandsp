@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: line_model_tests.c,v 1.18 2007/02/06 14:43:32 steveu Exp $
+ * $Id: line_model_tests.c,v 1.20 2007/11/10 11:14:58 steveu Exp $
  */
 
 /*! \page line_model_tests_page Telephony line model tests
@@ -38,25 +38,15 @@
 #endif
 
 #include <stdlib.h>
-#include <unistd.h>
-#include <inttypes.h>
-#include <string.h>
-#include <time.h>
 #include <stdio.h>
 #include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+#include <time.h>
 #include <audiofile.h>
-#include <tiffio.h>
-#if defined(HAVE_TGMATH_H)
-#include <tgmath.h>
-#endif
-#if defined(HAVE_MATH_H)
-#define GEN_CONST
-#include <math.h>
-#endif
 
 #include "spandsp.h"
-#include "test_utils.h"
-#include "line_model.h"
+#include "spandsp-sim.h"
 
 #if !defined(NULL)
 #define NULL (void *) 0

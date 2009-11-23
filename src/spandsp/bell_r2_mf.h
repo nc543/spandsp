@@ -22,7 +22,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: bell_r2_mf.h,v 1.9 2007/04/05 19:20:49 steveu Exp $
+ * $Id: bell_r2_mf.h,v 1.13 2007/11/30 12:20:35 steveu Exp $
  */
 
 /*! \file */
@@ -117,9 +117,10 @@ typedef enum
 typedef struct
 {
     tone_gen_state_t tones;
-    char digits[MAX_BELL_MF_DIGITS + 1];
     int current_sample;
-    size_t current_digits;
+    /* The queue structure MUST be followed immediately by the buffer */
+    queue_state_t queue;
+    char digits[MAX_BELL_MF_DIGITS + 1];
 } bell_mf_tx_state_t;
 
 /*!
@@ -138,12 +139,12 @@ typedef struct
     /*! The current sample number within a processing block. */
     int current_sample;
 
-    /*! The received digits buffer. This is a NULL terminated string. */
-    char digits[MAX_BELL_MF_DIGITS + 1];
-    /*! The number of digits currently in the digit buffer. */
-    int current_digits;
     /*! The number of digits which have been lost due to buffer overflows. */
     int lost_digits;
+    /*! The number of digits currently in the digit buffer. */
+    int current_digits;
+    /*! The received digits buffer. This is a NULL terminated string. */
+    char digits[MAX_BELL_MF_DIGITS + 1];
 } bell_mf_rx_state_t;
 
 /*!
@@ -169,7 +170,7 @@ typedef struct
     int current_sample;
 } r2_mf_rx_state_t;
 
-#ifdef __cplusplus
+#if defined(__cplusplus)
 extern "C"
 {
 #endif
@@ -177,22 +178,29 @@ extern "C"
 /*! \brief Generate a buffer of Bell MF tones.
     \param s The Bell MF generator context.
     \param amp The buffer for the generated signal.
-    \param samples The required number of generated samples.
+    \param max_samples The required number of generated samples.
     \return The number of samples actually generated. This may be less than 
-            samples if the input buffer empties. */
-int bell_mf_tx(bell_mf_tx_state_t *s, int16_t amp[], int samples);
+            max_samples if the input buffer empties. */
+int bell_mf_tx(bell_mf_tx_state_t *s, int16_t amp[], int max_samples);
 
 /*! \brief Put a string of digits in a Bell MF generator's input buffer.
     \param s The Bell MF generator context.
     \param digits The string of digits to be added.
+    \param len The length of the string of digits. If negative, the string is
+           assumed to be a NULL terminated string.
     \return The number of digits actually added. This may be less than the
             length of the digit string, if the buffer fills up. */
-size_t bell_mf_tx_put(bell_mf_tx_state_t *s, const char *digits);
+size_t bell_mf_tx_put(bell_mf_tx_state_t *s, const char *digits, ssize_t len);
 
 /*! \brief Initialise a Bell MF generator context.
     \param s The Bell MF generator context.
     \return A pointer to the Bell MF generator context.*/
 bell_mf_tx_state_t *bell_mf_tx_init(bell_mf_tx_state_t *s);
+
+/*! \brief Free a Bell MF generator context.
+    \param s The Bell MF generator context.
+    \return 0 for OK, else -1. */
+int bell_mf_tx_free(bell_mf_tx_state_t *s);
 
 /*! \brief Generate a block of R2 MF tones.
     \param s The R2 MF generator context.
@@ -207,12 +215,17 @@ int r2_mf_tx(r2_mf_tx_state_t *s, int16_t amp[], int samples);
     \return 0 for OK, or -1 for a bad request. */
 int r2_mf_tx_put(r2_mf_tx_state_t *s, char digit);
 
-/*! \brief Initialise an MFC/R2 tone generator context.
+/*! \brief Initialise an R2 MF tone generator context.
     \param s The R2 MF generator context.
     \param fwd TRUE if the context is for forward signals. FALSE if the
            context is for backward signals.
     \return A pointer to the MFC/R2 generator context.*/
 r2_mf_tx_state_t *r2_mf_tx_init(r2_mf_tx_state_t *s, int fwd);
+
+/*! \brief Free an R2 MF tone generator context.
+    \param s The R2 MF tone generator context.
+    \return 0 for OK, else -1. */
+int r2_mf_tx_free(r2_mf_tx_state_t *s);
 
 /*! Process a block of received Bell MF audio samples.
     \brief Process a block of received Bell MF audio samples.
@@ -241,6 +254,11 @@ bell_mf_rx_state_t *bell_mf_rx_init(bell_mf_rx_state_t *s,
                                     void (*callback)(void *user_data, const char *digits, int len),
                                     void *user_data);
 
+/*! \brief Free a Bell MF receiver context.
+    \param s The Bell MF receiver context.
+    \return 0 for OK, else -1. */
+int bell_mf_rx_free(bell_mf_rx_state_t *s);
+
 /*! Process a block of received R2 MF audio samples.
     \brief Process a block of received R2 MF audio samples.
     \param s The R2 MF receiver context.
@@ -256,7 +274,12 @@ int r2_mf_rx(r2_mf_rx_state_t *s, const int16_t amp[], int samples);
     \return A pointer to the R2 MF receiver context. */
 r2_mf_rx_state_t *r2_mf_rx_init(r2_mf_rx_state_t *s, int fwd);
 
-#ifdef __cplusplus
+/*! \brief Free an R2 MF receiver context.
+    \param s The R2 MF receiver context.
+    \return 0 for OK, else -1. */
+int r2_mf_rx_free(r2_mf_rx_state_t *s);
+
+#if defined(__cplusplus)
 }
 #endif
 
