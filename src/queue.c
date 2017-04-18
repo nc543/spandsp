@@ -39,6 +39,7 @@
 
 #define SPANDSP_FULLY_DEFINE_QUEUE_STATE_T
 #include "spandsp/telephony.h"
+#include "spandsp/alloc.h"
 #include "spandsp/queue.h"
 
 #include "spandsp/private/queue.h"
@@ -52,7 +53,7 @@ SPAN_DECLARE(int) queue_empty(queue_state_t *s)
 SPAN_DECLARE(int) queue_free_space(queue_state_t *s)
 {
     int len;
-    
+
     if ((len = s->optr - s->iptr - 1) < 0)
         len += s->len;
     /*endif*/
@@ -63,7 +64,7 @@ SPAN_DECLARE(int) queue_free_space(queue_state_t *s)
 SPAN_DECLARE(int) queue_contents(queue_state_t *s)
 {
     int len;
-    
+
     if ((len = s->iptr - s->optr) < 0)
         len += s->len;
     /*endif*/
@@ -83,7 +84,7 @@ SPAN_DECLARE(int) queue_view(queue_state_t *s, uint8_t *buf, int len)
     int to_end;
     int iptr;
     int optr;
-    
+
     /* Snapshot the values (although only iptr should be changeable during this processing) */
     iptr = s->iptr;
     optr = s->optr;
@@ -110,8 +111,8 @@ SPAN_DECLARE(int) queue_view(queue_state_t *s, uint8_t *buf, int len)
         /* A two step process */
         if (buf)
         {
-            memcpy(buf, s->data + optr, to_end);
-            memcpy(buf + to_end, s->data, real_len - to_end);
+            memcpy(buf, &s->data[optr], to_end);
+            memcpy(&buf[to_end], s->data, real_len - to_end);
         }
         /*endif*/
     }
@@ -119,7 +120,7 @@ SPAN_DECLARE(int) queue_view(queue_state_t *s, uint8_t *buf, int len)
     {
         /* A one step process */
         if (buf)
-            memcpy(buf, s->data + optr, real_len);
+            memcpy(buf, &s->data[optr], real_len);
         /*endif*/
     }
     /*endif*/
@@ -134,7 +135,7 @@ SPAN_DECLARE(int) queue_read(queue_state_t *s, uint8_t *buf, int len)
     int new_optr;
     int iptr;
     int optr;
-    
+
     /* Snapshot the values (although only iptr should be changeable during this processing) */
     iptr = s->iptr;
     optr = s->optr;
@@ -161,8 +162,8 @@ SPAN_DECLARE(int) queue_read(queue_state_t *s, uint8_t *buf, int len)
         /* A two step process */
         if (buf)
         {
-            memcpy(buf, s->data + optr, to_end);
-            memcpy(buf + to_end, s->data, real_len - to_end);
+            memcpy(buf, &s->data[optr], to_end);
+            memcpy(&buf[to_end], s->data, real_len - to_end);
         }
         /*endif*/
         new_optr = real_len - to_end;
@@ -171,7 +172,7 @@ SPAN_DECLARE(int) queue_read(queue_state_t *s, uint8_t *buf, int len)
     {
         /* A one step process */
         if (buf)
-            memcpy(buf, s->data + optr, real_len);
+            memcpy(buf, &s->data[optr], real_len);
         /*endif*/
         new_optr = optr + real_len;
         if (new_optr >= s->len)
@@ -191,7 +192,7 @@ SPAN_DECLARE(int) queue_read_byte(queue_state_t *s)
     int iptr;
     int optr;
     int byte;
-    
+
     /* Snapshot the values (although only iptr should be changeable during this processing) */
     iptr = s->iptr;
     optr = s->optr;
@@ -244,7 +245,7 @@ SPAN_DECLARE(int) queue_write(queue_state_t *s, const uint8_t *buf, int len)
     if (iptr < optr  ||  to_end >= real_len)
     {
         /* A one step process */
-        memcpy(s->data + iptr, buf, real_len);
+        memcpy(&s->data[iptr], buf, real_len);
         new_iptr = iptr + real_len;
         if (new_iptr >= s->len)
             new_iptr = 0;
@@ -253,8 +254,8 @@ SPAN_DECLARE(int) queue_write(queue_state_t *s, const uint8_t *buf, int len)
     else
     {
         /* A two step process */
-        memcpy(s->data + iptr, buf, to_end);
-        memcpy(s->data, buf + to_end, real_len - to_end);
+        memcpy(&s->data[iptr], buf, to_end);
+        memcpy(s->data, &buf[to_end], real_len - to_end);
         new_iptr = real_len - to_end;
     }
     /*endif*/
@@ -358,8 +359,8 @@ SPAN_DECLARE(int) queue_write_msg(queue_state_t *s, const uint8_t *buf, int len)
     if (iptr < optr  ||  to_end >= real_len)
     {
         /* A one step process */
-        memcpy(s->data + iptr, &lenx, sizeof(uint16_t));
-        memcpy(s->data + iptr + sizeof(uint16_t), buf, len);
+        memcpy(&s->data[iptr], &lenx, sizeof(uint16_t));
+        memcpy(&s->data[iptr + sizeof(uint16_t)], buf, len);
         new_iptr = iptr + real_len;
         if (new_iptr >= s->len)
             new_iptr = 0;
@@ -371,16 +372,16 @@ SPAN_DECLARE(int) queue_write_msg(queue_state_t *s, const uint8_t *buf, int len)
         if (to_end >= sizeof(uint16_t))
         {
             /* The actual message wraps around the end of the buffer */
-            memcpy(s->data + iptr, &lenx, sizeof(uint16_t));
-            memcpy(s->data + iptr + sizeof(uint16_t), buf, to_end - sizeof(uint16_t));
-            memcpy(s->data, buf + to_end - sizeof(uint16_t), real_len - to_end);
+            memcpy(&s->data[iptr], &lenx, sizeof(uint16_t));
+            memcpy(&s->data[iptr + sizeof(uint16_t)], buf, to_end - sizeof(uint16_t));
+            memcpy(s->data, &buf[to_end - sizeof(uint16_t)], real_len - to_end);
         }
         else
         {
             /* The message length wraps around the end of the buffer */
-            memcpy(s->data + iptr, (uint8_t *) &lenx, to_end);
+            memcpy(&s->data[iptr], (uint8_t *) &lenx, to_end);
             memcpy(s->data, ((uint8_t *) &lenx) + to_end, sizeof(uint16_t) - to_end);
-            memcpy(s->data + sizeof(uint16_t) - to_end, buf, len);
+            memcpy(&s->data[sizeof(uint16_t) - to_end], buf, len);
         }
         new_iptr = real_len - to_end;
     }
@@ -395,7 +396,7 @@ SPAN_DECLARE(queue_state_t *) queue_init(queue_state_t *s, int len, int flags)
 {
     if (s == NULL)
     {
-        if ((s = (queue_state_t *) malloc(sizeof(*s) + len + 1)) == NULL)
+        if ((s = (queue_state_t *) span_alloc(sizeof(*s) + len + 1)) == NULL)
             return NULL;
     }
     s->iptr =
@@ -414,7 +415,7 @@ SPAN_DECLARE(int) queue_release(queue_state_t *s)
 
 SPAN_DECLARE(int) queue_free(queue_state_t *s)
 {
-    free(s);
+    span_free(s);
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
