@@ -1,16 +1,13 @@
 /*
  * SpanDSP - a series of DSP components for telephony
  *
- * echo.h - An echo cancellor, suitable for electrical and acoustic
- *	    cancellation. This code does not currently comply with
- *	    any relevant standards (e.g. G.164/5/7/8).
+ * echo.c - A line echo canceller.  This code is being developed
+ *          against and partially complies with G168.
  *
  * Written by Steve Underwood <steveu@coppice.org>
+ *         and David Rowe <david_at_rowetel_dot_com>
  *
- * Copyright (C) 2001 Steve Underwood
- *
- * Based on a bit from here, a bit from there, eye of toad,
- * ear of bat, etc - plus, of course, my own 2 cents.
+ * Copyright (C) 2001 Steve Underwood and 2007 David Rowe
  *
  * All rights reserved.
  *
@@ -119,13 +116,15 @@ minor burden.
 
 #include "fir.h"
 
-#define NONUPDATE_DWELL_TIME	600 	/* 600 samples, or 75ms */
-
 /* Mask bits for the adaption mode */
-#define ECHO_CAN_USE_NLP            0x01
-#define ECHO_CAN_USE_SUPPRESSOR     0x02
+
+#define ECHO_CAN_USE_ADAPTION       0x01
+#define ECHO_CAN_USE_NLP            0x02
 #define ECHO_CAN_USE_CNG            0x04
-#define ECHO_CAN_USE_ADAPTION       0x08
+#define ECHO_CAN_USE_CLIP           0x08
+#define ECHO_CAN_USE_TX_HPF         0x10
+#define ECHO_CAN_USE_RX_HPF         0x20
+#define ECHO_CAN_DISABLE            0x40
 
 /*!
     G.168 echo canceller descriptor. This defines the working state for a line
@@ -133,48 +132,49 @@ minor burden.
 */
 typedef struct
 {
-    int tx_power[4];
-    int rx_power[3];
-    int clean_rx_power;
+    int16_t tx,rx;
+    int16_t clean;
+    int16_t clean_nlp;
 
-    int rx_power_threshold;
     int nonupdate_dwell;
-
-    fir16_state_t fir_state;
-    /*! Echo FIR taps (16 bit version) */
-    int16_t *fir_taps16[4];
-    /*! Echo FIR taps (32 bit version) */
-    int32_t *fir_taps32;
-
     int curr_pos;
-	
     int taps;
-    int tap_mask;
+    int log2taps;
     int adaption_mode;
+
+    int cond_met;
+    int32_t Pstates;
+    int16_t adapt;
+    int32_t factor;
+    int16_t shift;
+
+    /* Average levels and averaging filter states */ 
+    int Ltxacc, Lrxacc, Lcleanacc, Lclean_bgacc;
+    int Ltx, Lrx;
+    int Lclean;
+    int Lclean_bg;
+    int Lbgn, Lbgn_acc, Lbgn_upper, Lbgn_upper_acc;
+
+    /* foreground and background filter states */
+    fir16_state_t fir_state;
+    fir16_state_t fir_state_bg;
+    int16_t *fir_taps16[2];
     
-    int32_t supp_test1;
-    int32_t supp_test2;
-    int32_t supp1;
-    int32_t supp2;
-    int vad;
-    int cng;
-    /* Parameters for the Hoth noise generator */
+    /* DC blocking filter states */
+    int tx_1, tx_2, rx_1, rx_2;
+   
+    /* optional High Pass Filter states */
+    int32_t xvtx[5], yvtx[5];
+    int32_t xvrx[5], yvrx[5];
+   
+    /* Parameters for the optional Hoth noise generator */
     int cng_level;
     int cng_rndnum;
     int cng_filter;
     
-    int16_t geigel_max;
-    int geigel_lag;
-    int dtd_onset;
-    int tap_set;
-    int tap_rotate_counter;
+    /* snapshot sample of coeffs used for development */
+    int16_t *snapshot;       
 
-    int32_t latest_correction;  /* Indication of the magnitude of the latest
-                                   adaption, or a code to indicate why adaption
-                                   was skipped, for test purposes */
-    int32_t last_acf[28];
-    int narrowband_count;
-    int narrowband_score;
 } echo_can_state_t;
 
 /*! Create a voice echo canceller context.
@@ -199,6 +199,8 @@ void echo_can_flush(echo_can_state_t *ec);
 */
 void echo_can_adaption_mode(echo_can_state_t *ec, int adaption_mode);
 
+void echo_can_snapshot(echo_can_state_t *ec);
+
 /*! Process a sample through a voice echo canceller.
     \param ec The echo canceller context.
     \param tx The transmitted audio sample.
@@ -206,6 +208,13 @@ void echo_can_adaption_mode(echo_can_state_t *ec, int adaption_mode);
     \return The clean (echo cancelled) received sample.
 */
 int16_t echo_can_update(echo_can_state_t *ec, int16_t tx, int16_t rx);
+
+/*! Process to high pass filter the tx signal.
+    \param ec The echo canceller context.
+    \param tx The transmitted auio sample.
+    \return The HP filtered transmit sample, send this to your D/A.
+*/
+int16_t echo_can_hpf_tx(echo_can_state_t *ec, int16_t tx);
 
 #endif
 /*- End of file ------------------------------------------------------------*/

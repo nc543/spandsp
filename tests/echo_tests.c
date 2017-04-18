@@ -77,29 +77,6 @@ all the tests in G.168 are fully implemented at this time.
 
 #define TEST_EC_TAPS            256
 
-#define PERFORM_TEST_2A         (1 << 1)
-#define PERFORM_TEST_2B         (1 << 2)
-#define PERFORM_TEST_2C         (1 << 3)
-#define PERFORM_TEST_3A         (1 << 4)
-#define PERFORM_TEST_3B         (1 << 5)
-#define PERFORM_TEST_3C         (1 << 6)
-#define PERFORM_TEST_4          (1 << 7)
-#define PERFORM_TEST_5          (1 << 8)
-#define PERFORM_TEST_6          (1 << 9)
-#define PERFORM_TEST_7          (1 << 10)
-#define PERFORM_TEST_8          (1 << 11)
-#define PERFORM_TEST_9          (1 << 12)
-#define PERFORM_TEST_10A        (1 << 13)
-#define PERFORM_TEST_10B        (1 << 14)
-#define PERFORM_TEST_10C        (1 << 15)
-#define PERFORM_TEST_11         (1 << 16)
-#define PERFORM_TEST_12         (1 << 17)
-#define PERFORM_TEST_13         (1 << 18)
-#define PERFORM_TEST_14         (1 << 19)
-#define PERFORM_TEST_15         (1 << 20)
-
-int test_list;
-
 #if !defined(NULL)
 #define NULL (void *) 0
 #endif
@@ -127,18 +104,30 @@ signal_source_t local_css;
 signal_source_t far_css;
 
 fir32_state_t line_model;
+float model_ki, erl;
 
 AFfilehandle residuehandle;
 int16_t residue_sound[SAMPLE_RATE];
 int residue_cur = 0;
+int munge;
+
+FILE *fdump;
+
+float clip(float x);
+float clip(float x) {
+    if (x > 32767.0) x = 32767.0;
+    if (x < -32767.0) x = -32767.0;
+
+    return x;
+}
+/*- End of function --------------------------------------------------------*/
 
 static inline void put_residue(int16_t amp)
 {
     int outframes;
 
     residue_sound[residue_cur++] = amp;
-    if (residue_cur >= SAMPLE_RATE)
-    {
+    if (residue_cur >= SAMPLE_RATE)    {
         outframes = afWriteFrames(residuehandle,
                                   AF_DEFAULT_TRACK,
                                   residue_sound,
@@ -187,13 +176,61 @@ static void signal_load(signal_source_t *sig, const char *name)
 }
 /*- End of function --------------------------------------------------------*/
 
-static void signal_free(signal_source_t *sig)
+static AFfilehandle af_file_open_for_read(const char *name)
 {
-    if (afCloseFile(sig->handle) != 0)
+    float x;
+    AFfilehandle handle;
+
+    if ((handle = afOpenFile(name, "r", 0)) == AF_NULL_FILEHANDLE)
     {
-        fprintf(stderr, "    Cannot close sound file '%s'\n", sig->name);
+        fprintf(stderr, "    Cannot open wave file '%s'\n", name);
         exit(2);
     }
+    if ((x = afGetFrameSize(handle, AF_DEFAULT_TRACK, 1)) != 2.0)
+    {
+        fprintf(stderr, "    Unexpected frame size in wave file '%s'\n", name);
+        exit(2);
+    }
+    if ((x = afGetRate(handle, AF_DEFAULT_TRACK)) != (float) SAMPLE_RATE)
+    {
+        printf("    Unexpected sample rate in wave file '%s'\n", name);
+        exit(2);
+    }
+    if ((x = afGetChannels(handle, AF_DEFAULT_TRACK)) != 1.0)
+    {
+        printf("    Unexpected number of channels in wave file '%s'\n", name);
+        exit(2);
+    }
+
+    return handle;
+}
+/*- End of function --------------------------------------------------------*/
+
+static AFfilehandle af_file_open_for_write(const char *name)
+{
+    AFfilesetup  setup;
+    AFfilehandle handle;
+
+    setup = afNewFileSetup();
+    if (setup == AF_NULL_FILESETUP)
+    {
+        fprintf(stderr, "    %s: Failed to create file setup\n", name);
+        exit(2);
+    }
+    afInitSampleFormat(setup, AF_DEFAULT_TRACK, AF_SAMPFMT_TWOSCOMP, 16);
+    afInitRate(setup, AF_DEFAULT_TRACK, (float) SAMPLE_RATE);
+    afInitFileFormat(setup, AF_FILE_WAVE);
+    afInitChannels(setup, AF_DEFAULT_TRACK, 1);
+    handle = afOpenFile(name, "w", setup);
+
+    if (handle == AF_NULL_FILEHANDLE)
+    {
+        fprintf(stderr, "    Failed to open result file\n");
+        exit(2);
+    }
+    afFreeFileSetup(setup);
+
+    return handle;
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -214,9 +251,13 @@ static int16_t signal_amp(signal_source_t *sig)
 }
 /*- End of function --------------------------------------------------------*/
 
+/* note mu-law used, alaw has big DC Offsets that causes probs with G168
+   tests, due to alaw idle values being passed thru when NLP opens for
+   very low level signals.  Probably need a DC blocking filter in e/c
+*/
 static inline int16_t codec_munge(int16_t amp)
 {
-    return alaw_to_linear(linear_to_alaw(amp));
+    return ulaw_to_linear(linear_to_ulaw(amp));
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -246,9 +287,17 @@ static int channel_model_create(int model)
         sizeof(line_model_d9_coeffs)/sizeof(int32_t)
     };
 
-    if (model < 0  ||  model >= (int) (sizeof(line_model_sizes)/sizeof(line_model_sizes[0])))
+    static float ki[] = 
+    {
+	1.39E-5, 1.44E-5, 1.52E-5, 1.77E-5, 9.33E-6, 1.51E-5, 2.33E-5, 1.33E-5
+    };
+
+    if (model < 1  ||  model > (int) (sizeof(line_model_sizes)/sizeof(line_model_sizes[0])))
         return -1;
-    fir32_create(&line_model, line_models[model], line_model_sizes[model]);
+    fir32_create(&line_model, line_models[model-1], line_model_sizes[model-1]);
+
+    model_ki = ki[model-1];
+
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
@@ -264,17 +313,23 @@ static int16_t channel_model(int16_t *new_local, int16_t *new_far, int16_t local
 
     /* The local tx signal will usually have gone through an A-law munging before
        it reached the line's analogue area, where the echo occurs. */
-    local = codec_munge(local);
+    if (munge == TRUE)
+	local = codec_munge(local);
     /* Now we need to model the echo. We only model a single analogue segment, as per
        the G.168 spec. However, there will generally be near end and far end analogue/echoey
        segments in the real world, unless an end is purely digital. */
-    echo = fir32(&line_model, local/8);
+    echo = fir32(&line_model, local*erl*(32768.0*model_ki));
     /* The far end signal will have been through an A-law munging, although
        this should not affect things. */
-    rx = echo + codec_munge(far);
+    if (munge == TRUE)
+	rx = clip(echo + codec_munge(far));
+    else
+	rx = clip(echo + far);
+	
     /* This mixed echo and far end signal will have been through an A-law munging
        when it came back into the digital network. */
-    rx = codec_munge(rx);
+    if (munge == TRUE)
+	rx = codec_munge(rx);
     if (new_far)
         *new_far = rx;
     if (new_local)
@@ -282,6 +337,54 @@ static int16_t channel_model(int16_t *new_local, int16_t *new_far, int16_t local
     return  rx;
 }
 /*- End of function --------------------------------------------------------*/
+
+/* 
+   250Hz HP filter, designed using this excellent site:
+ 
+   http://www-users.cs.york.ac.uk/~fisher/mkfilter/
+
+   Included as preliminary test to see if this sort of filter will help
+   hum removal from low cost X100P type cards.  Unfortunately I couldn't
+   get thios to work well in fixed point, so had to leave it out of 
+   treh core echo canceller.
+*/
+
+#define NZEROS 4
+#define NPOLES 4
+
+#define FIXED
+#ifdef FIXED
+#define GAIN   1.293080949e+00
+#define QCONST32(x,bits) ((int)((x)*(1<<(bits))))
+
+static int hp_filter(int xv[], int yv[], int x)
+{
+    xv[0] = xv[1]; xv[1] = xv[2]; xv[2] = xv[3]; xv[3] = xv[4]; 
+    xv[4] = x * (int)((1<<5)/GAIN);
+    yv[0] = yv[1]; yv[1] = yv[2]; yv[2] = yv[3]; yv[3] = yv[4]; 
+    yv[4] =   (xv[0] + xv[4]) - 4 * (xv[1] + xv[3]) + 6 * xv[2];
+    yv[4] +=  (QCONST32(-0.5980652616f, 10) * yv[0]) >> 10;
+    yv[4] +=  (QCONST32( 2.6988843913f, 10) * yv[1]) >> 10;
+    yv[4] +=  (QCONST32(-4.5892912321f, 10) * yv[2]) >> 10;
+    yv[4] +=  (QCONST32( 3.4873077415f, 10) * yv[3]) >> 10;
+
+    return yv[4] >> 5;     
+}
+
+#else
+#define GAIN   1.293080949e+00
+
+static float hp_filter(float xv[], float yv[], float x)
+{
+    xv[0] = xv[1]; xv[1] = xv[2]; xv[2] = xv[3]; xv[3] = xv[4]; 
+    xv[4] = x / GAIN;
+    yv[0] = yv[1]; yv[1] = yv[2]; yv[2] = yv[3]; yv[3] = yv[4]; 
+    yv[4] =   (xv[0] + xv[4]) - 4 * (xv[1] + xv[3]) + 6 * xv[2]
+	+ ( -0.5980652616 * yv[0]) + (  2.6988843913 * yv[1])
+	+ ( -4.5892912321 * yv[2]) + (  3.4873077415 * yv[3]);
+    return yv[4];     
+}
+#endif
 
 static level_measurement_device_t *level_measurement_device_create(int type)
 {
@@ -300,6 +403,17 @@ static level_measurement_device_t *level_measurement_device_create(int type)
     dev->power = 0;
     dev->type = type;
     return  dev;
+}
+/*- End of function --------------------------------------------------------*/
+
+static void level_measurement_device_reset(level_measurement_device_t *dev)
+{
+    int i;
+
+    for (i = 0;  i < 35*8;  i++)
+        dev->history[i] = 0.0;
+    dev->pos = 0;
+    dev->power = 0;
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -330,349 +444,594 @@ static float level_measurement_device(level_measurement_device_t *dev, int16_t a
         dev->history[dev->pos++] = signal;
         signal = sqrt(dev->power/(35.8*8.0));
     }
-    return signal;
+    if (signal > 0.0) 
+	return DBM0_MAX_POWER + 20.0*log10(signal/32767.0);
+    else
+	return -1000.0;
 }
 /*- End of function --------------------------------------------------------*/
 
+/* Globals used for performing tests */
+
+echo_can_state_t *ctx;
+awgn_state_t      sgen_noise_source;
+awgn_state_t      rin_noise_source;
+
+level_measurement_device_t *Rin_power_meter;
+level_measurement_device_t *Sgen_power_meter;
+level_measurement_device_t *Sin_power_meter;
+level_measurement_device_t *Sout_power_meter;
+
+float LRin, maxLRin;
+float LSgen, maxLSgen;
+float LSin, maxLSin;
+float LSout, maxLSout;
+float Lres, maxLres;
+float test_clock;
+float maxHoth;
+
+float Rin_level, Sgen_level;
+FILE *flevel;
+int Rin_type, Sgen_type;
+int failed;
+int verbose, quiet;
+float threshold;
+int model_number;
+char test_name[80];
+
+tone_gen_state_t rin_tone_state;
+tone_gen_state_t sgen_tone_state;
+
+/*
+   Test callback functions are called one for every processed sample
+   during run_test().  They are user supplied, and return TRUE if the
+   test is passing or FALSE if a combination of variables mean that
+   the test has failed (for example Lres exceeding some threshold).
+
+   Different test callback functions are required for each G168 test.
+*/
+int (*test_callback)(void);
+
+/* macros to convert units for run_test */
+
+#define MSEC  (SAMPLE_RATE/1000)
+#define SEC   SAMPLE_RATE
+
+/* Sgen signal generator types */
+
+#define NONE 0
+#define CSS  1
+#define HOTH 2
+#define TONE 3
+
+/* Experimentally generated constants to normalise levels to dBm0 */
+
+#define HOTH_SCALE 2.40
+#define CSS_SCALE  5.60
+
+static void reset_all(void) {
+    echo_can_flush(ctx);
+    maxLRin = maxLSgen = maxLSin = maxLSout = maxLres = -100.0;
+    signal_restart(&local_css);
+    signal_restart(&far_css);
+    test_callback = NULL;
+    Rin_type = CSS;
+    Sgen_type = NONE;
+    failed = FALSE;
+    test_clock = 0.0;
+}
+
+static void reset_meter_peaks(void) {
+    maxLRin = maxLSgen = maxLSin = maxLSout = maxLres = -100.0;
+}
+
+static void install_test_callback(int (*f)(void)) {
+    test_callback = f;
+}
+
+/* note: maybe we should use absolute levels rather than gain?  Need to
+   normalise levels from various signal types to do this */
+
+static void set_Sgen(int source_type, float gain) {
+    Sgen_type = source_type;
+    Sgen_level = pow(10.0, gain/20.0);
+}
+
+static void set_Rin(int source_type, float gain) {
+    Rin_type = source_type;
+    Rin_level = pow(10.0, gain/20.0);
+}
+
+static void mute_Rin(void) {
+    Rin_type = NONE;
+}
+
+static void unmute_Rin(void) {
+    Rin_type = CSS;
+}
+
+static void update_levels(int16_t rin, int16_t sin, int16_t sout, int16_t sgen)
+{
+    LRin = level_measurement_device(Rin_power_meter, rin);
+    LSin = level_measurement_device(Sin_power_meter, sin);
+    LSout = level_measurement_device(Sout_power_meter, sout);
+    LSgen = level_measurement_device(Sgen_power_meter, sgen);
+    if (LRin > maxLRin) maxLRin = LRin;
+    if (LSin > maxLSin) maxLSin = LSin;
+    if (LSout > maxLSout) maxLSout = LSout;
+    if (LSgen > maxLSgen) maxLSgen = LSgen;
+}
+
+static void write_log_files(int16_t rout, int16_t sin)
+{
+    fprintf(flevel, "%f\t%f\t%f\t%f\n",LRin, LSin, LSout, LSgen);
+    fprintf(fdump, "%d %d %d", ctx->tx, ctx->rx, ctx->clean);
+    fprintf(fdump, " %d %d %d %d %d %d %d %d %d %d\n", ctx->clean_nlp, ctx->Ltx, 
+	    ctx->Lrx, ctx->Lclean, 
+	    (ctx->nonupdate_dwell > 0), ctx->adapt,  ctx->Lclean_bg, ctx->Pstates, 
+	    ctx->Lbgn_upper, ctx->Lbgn);
+}
+
+static void run_test(float time, float units) {
+    int     i;
+    int     samples;
+    int16_t rout, rin=0, sin;
+    int16_t sgen=0, sout;
+    float   rin_hoth_noise = 0;	
+    float   sgen_hoth_noise = 0;	
+
+    samples = time * units;
+
+    for (i = 0;  i < samples;  i++) {
+
+	switch(Rin_type) {
+	case NONE:
+	    rin = 0;
+	    break;
+	case CSS:
+	    rin = clip(Rin_level*signal_amp(&local_css)*CSS_SCALE);
+	    break;
+	case HOTH:
+	    rin_hoth_noise = rin_hoth_noise*0.625 + awgn(&rin_noise_source)*0.375;
+	    rin = clip(Rin_level*rin_hoth_noise*HOTH_SCALE); 
+	    break;
+	case TONE:
+            tone_gen(&rin_tone_state, &rin, 1);
+	    break;
+	}
+
+	switch(Sgen_type) {
+	case NONE:
+	    sgen = 0;
+	    break;
+	case CSS:
+	    sgen = clip(Sgen_level*signal_amp(&far_css)*CSS_SCALE);
+	    break;
+	case HOTH:
+	    sgen_hoth_noise = sgen_hoth_noise*0.625 + awgn(&sgen_noise_source)*0.375;
+	    sgen = clip(Sgen_level*sgen_hoth_noise*HOTH_SCALE); 
+	    break;
+	case TONE:
+            tone_gen(&sgen_tone_state, &sgen, 1);
+	    break;
+	}
+
+        rout = echo_can_hpf_tx(ctx, rin);
+	channel_model(&rout, &sin, rin, sgen);
+	sout = echo_can_update(ctx, rout, sin);
+	update_levels(rin, sin, sout, sgen);
+	write_log_files(rout, sin);
+	
+	/* now test for fail condition */
+	if (test_callback != NULL) {
+	    if ( (failed == FALSE) && (test_callback() == FALSE)) {
+		/* test has failed */
+		failed = TRUE;
+	    }
+	}
+	    
+	/* stop clock on fail - points to time of failure in test */
+
+	if (failed == FALSE)
+	    test_clock += (float)1/SAMPLE_RATE;
+    }
+}
+
+static void print_title(const char *title) {
+    if (quiet == FALSE) 
+	printf(title);
+}
+
+static void print_results(void) {
+
+    if (quiet == FALSE) 
+	printf("test  model  ERL   time     Max Rin  Max Sin  Max Sgen  Max Sout  Result\n");
+    printf("%-4s  %-1d      %-5.1f%6.2fs%9.2f%9.2f%10.2f%10.2f   ", 
+	   test_name, model_number, 20.0*log10(erl), 
+	   test_clock, maxLRin, maxLSin, maxLSgen, maxLSout);
+    if (failed == TRUE)
+	printf("FAIL\n");
+    else
+	printf("PASS\n");
+}
+
+static int test_2a(void) {
+    if (LSout > -65.0) 
+	return FALSE;
+    else
+	return TRUE;
+}
+
+static int test_2c(void) {
+    if (LSout > maxHoth) 
+	return FALSE;
+    else
+	return TRUE;
+}
+
+static int test_3a(void) {
+    if (LSout > maxLSgen) 
+	return FALSE;
+    else
+	return TRUE;
+}
+
+static int test_3b(void) {
+    if (LSout > threshold) 
+	return FALSE;
+    else
+	return TRUE;
+}
+
+static int test_3c_t2(void) {
+    if (LSout > maxLSgen) 
+	return FALSE;
+    else
+	return TRUE;
+}
+
+static int test_3c_t4t5(void) {
+    if (LSout > (maxLSgen+6.0)) 
+	return FALSE;
+    else
+	return TRUE;
+}
+
+static int test_9(void) {
+    if (fabs(LSout - LSgen) > 2.0) 
+	return FALSE;
+    else
+	return TRUE;
+}
+
+#define N_TESTS 9
+static const char *supported_tests[] = {"ut1", "2aa", "2ca", "3a", "3ba", 
+					"3bb", "3c", "6", "9"};
+
+static int is_test_supported(char *test) {
+    int i;
+    for(i=0; i<N_TESTS; i++) {
+	if (!strcasecmp(test, supported_tests[i]))
+	    return TRUE;
+    }
+
+    return FALSE;
+}
+
+/* dump estimate echo response */
+static void dump_h(void) {
+    int i;
+    FILE *f = fopen("h.txt","wt");
+    for(i=0; i<TEST_EC_TAPS; i++) {
+	fprintf(f, "%f\n", (float)ctx->fir_taps16[0][i]/(1<<15));
+    }
+    fclose(f);
+}
+       
 int main(int argc, char *argv[])
 {
-    echo_can_state_t *ctx;
-    awgn_state_t local_noise_source;
-    awgn_state_t far_noise_source;
+    //awgn_state_t local_noise_source;
     int i;
-    int clean;
-    int residue;
-    int16_t rx;
-    int16_t tx;
-    int j;
-    int k;
-    tone_gen_descriptor_t tone_desc;
-    tone_gen_state_t tone_state;
-    int16_t local_sound[40000];
-    int local_max;
-    int local_cur;
-    int16_t hoth_noise;
-    //int16_t far_sound[SAMPLE_RATE];
-    //int16_t result_sound[64000];
-    //int32_t coeffs[200][128];
-    //int coeff_index;
+    //int j;
+    //int k;
+    //tone_gen_descriptor_t tone_desc;
+    //tone_gen_state_t tone_state;
+    //int16_t local_sound[40000];
+    //int local_max;
+    //int local_cur;
     int far_cur;
     int result_cur;
-    //int far_tx;
-    AFfilehandle resulthandle;
-    AFfilesetup filesetup;
-    AFfilesetup filesetup2;
-    //int outframes;
+    AFfilehandle txfile, rxfile, ecfile;
     time_t now;
     int tone_burst_step;
-    level_measurement_device_t *power_meter_1;
-    level_measurement_device_t *power_meter_2;
-    float pp1;
-    float pp2;
-    int model_number;
-    int use_gui;
+    float X_level, Sgen_leveldB;
+#ifdef FIXED
+    int xvrx[NZEROS+1], yvrx[NPOLES+1];
+    int xvtx[NZEROS+1], yvtx[NPOLES+1];
+#else
+    float xvrx[NZEROS+1], yvrx[NPOLES+1];
+    float xvtx[NZEROS+1], yvtx[NPOLES+1];
+#endif
 
-    power_meter_1 = NULL;
-    power_meter_2 = NULL;
-    /* Check which tests we should run */
-    if (argc < 2)
-        fprintf(stderr, "Usage: echo tests <list of test numbers>\n");
-    test_list = 0;
-    model_number = 0;
-    use_gui = FALSE;
+    int file_mode;
+    float tmp;
+    int   cng;
+    int   hpf;
+
+    /* default config ------------------------------------------------*/
+
+    model_number = 1;
+    erl = pow(10.0, -10.0/20.0);
+    verbose = quiet = FALSE;
+    file_mode = FALSE;
+    Rin_level = pow(10.0, -15.0/20.0);
+    Sgen_leveldB = -15.0;
+    Sgen_level = pow(10.0, Sgen_leveldB/20.0);
+    X_level = pow(10.0, 6.0/20.0);
+    tone_burst_step = 0;
+    txfile = rxfile = ecfile = NULL;
+    munge = TRUE;
+    cng = FALSE;
+    hpf = TRUE;
+    for(i=0; i<NPOLES+1; i++) {
+      xvtx[i] = yvtx[i] = xvrx[i] = yvrx[i] = 0.0;
+    }
+    
+    /* Check which tests we should run ----------------------------------------*/
+
+    if (argc < 2) {
+        fprintf(stderr, "Usage: echo [2aa] [2ca] [3a] [3ba] [3bb] [3c] [6] [9]\n"
+		        "[-m ChannelModelNumber]\n"
+		        "[-erl ERL_in_dB\n"
+		        "[-file RinInputFile.wav SinInputFile.wav SoutOutputFile.wav\n"
+		        "[-r RinLeveldBm0] [-s SgenLeveldBm0] [-x XLeveldB]\n"
+		        "[-nomunge]\n"
+		        "[-cng]\n"
+		        "[-nohpf] Disable DC block HPF (-file mode)\n");
+
+	exit(1);
+    }
+
     for (i = 1;  i < argc;  i++)
     {
-        if (strcasecmp(argv[i], "2a") == 0)
-            test_list |= PERFORM_TEST_2A;
-        else if (strcasecmp(argv[i], "2b") == 0)
-            test_list |= PERFORM_TEST_2B;
-        else if (strcasecmp(argv[i], "2c") == 0)
-            test_list |= PERFORM_TEST_2C;
-        else if (strcasecmp(argv[i], "3a") == 0)
-            test_list |= PERFORM_TEST_3A;
-        else if (strcasecmp(argv[i], "3b") == 0)
-            test_list |= PERFORM_TEST_3B;
-        else if (strcasecmp(argv[i], "3c") == 0)
-            test_list |= PERFORM_TEST_3C;
-        else if (strcasecmp(argv[i], "4") == 0)
-            test_list |= PERFORM_TEST_4;
-        else if (strcasecmp(argv[i], "5") == 0)
-            test_list |= PERFORM_TEST_5;
-        else if (strcasecmp(argv[i], "6") == 0)
-            test_list |= PERFORM_TEST_6;
-        else if (strcasecmp(argv[i], "7") == 0)
-            test_list |= PERFORM_TEST_7;
-        else if (strcasecmp(argv[i], "8") == 0)
-            test_list |= PERFORM_TEST_8;
-        else if (strcasecmp(argv[i], "9") == 0)
-            test_list |= PERFORM_TEST_9;
-        else if (strcasecmp(argv[i], "10a") == 0)
-            test_list |= PERFORM_TEST_10A;
-        else if (strcasecmp(argv[i], "10b") == 0)
-            test_list |= PERFORM_TEST_10B;
-        else if (strcasecmp(argv[i], "10c") == 0)
-            test_list |= PERFORM_TEST_10C;
-        else if (strcasecmp(argv[i], "11") == 0)
-            test_list |= PERFORM_TEST_11;
-        else if (strcasecmp(argv[i], "12") == 0)
-            test_list |= PERFORM_TEST_12;
-        else if (strcasecmp(argv[i], "13") == 0)
-            test_list |= PERFORM_TEST_13;
-        else if (strcasecmp(argv[i], "14") == 0)
-            test_list |= PERFORM_TEST_14;
-        else if (strcasecmp(argv[i], "15") == 0)
-            test_list |= PERFORM_TEST_15;
-        else if (strcmp(argv[i], "-m") == 0)
+	if (is_test_supported(argv[i])) {
+	}
+	else if (strcmp(argv[i], "-m") == 0)
         {
             if (++i < argc)
                 model_number = atoi(argv[i]);
         }
-        else if (strcmp(argv[i], "-g") == 0)
+        else if (strcmp(argv[i], "-r") == 0)
         {
-            use_gui = TRUE;
+            if (++i < argc)
+                Rin_level = pow(10.0, atof(argv[i])/20.0);
+        }
+        else if (strcmp(argv[i], "-s") == 0)
+        {
+            if (++i < argc) {
+                Sgen_leveldB = atof(argv[i]);
+                Sgen_level = pow(10.0, Sgen_leveldB/20.0);
+	    }
+        }
+        else if (strcmp(argv[i], "-x") == 0)
+        {
+            if (++i < argc)
+                X_level = pow(10.0, atof(argv[i])/20.0);
+        }
+        else if (strcmp(argv[i], "-erl") == 0)
+        {
+            if (++i < argc) {
+                erl = atof(argv[i]);
+		if (erl < 0.0) {
+		    printf("ERL must be >= 0.0 dB\n");
+		    exit(1);
+		}
+		erl = pow(10.0, -erl/20.0);
+	    }
+        }
+        else if (strcmp(argv[i], "-v") == 0)
+        {
+            verbose = TRUE;
+        }
+        else if (strcmp(argv[i], "-q") == 0)
+        {
+            quiet = TRUE;
+        }
+        else if (strcmp(argv[i], "-file") == 0)
+        {
+	    file_mode = TRUE;
+	    if (argc < (i+3)) {
+		printf("not enough arguments for --file\n");
+		exit(2);
+	    }
+	    txfile = af_file_open_for_read(argv[i+1]);	    
+ 	    rxfile = af_file_open_for_read(argv[i+2]);	    
+ 	    ecfile = af_file_open_for_write(argv[i+3]);
+	    i += 3;
+        }
+        else if (strcmp(argv[i], "-nomunge") == 0)
+        {
+            munge = FALSE;
+        }
+        else if (strcmp(argv[i], "-cng") == 0)
+        {
+            cng = TRUE;
+        }
+        else if (strcmp(argv[i], "-nohpf") == 0)
+        {
+            hpf = FALSE;
         }
         else
         {
-            fprintf(stderr, "Unknown test '%s' specified\n", argv[i]);
+            fprintf(stderr, "Unknown test/option '%s' specified\n", argv[i]);
             exit(2);
         }
     }
-    if (test_list == 0)
-    {
-        fprintf(stderr, "No tests have been selected\n");
-        exit(2);
-    }
+
+    /* initialise a bunch of modules we need ------------------------------*/
+
     time(&now);
-    tone_burst_step = 0;
+
     ctx = echo_can_create(TEST_EC_TAPS, 0);
-    awgn_init_dbm0(&far_noise_source, 7162534, -50.0f);
-
-    signal_load(&local_css, "sound_c1_8k.wav");
-    signal_load(&far_css, "sound_c3_8k.wav");
-
-    filesetup = afNewFileSetup();
-    if (filesetup == AF_NULL_FILESETUP)
-    {
-        fprintf(stderr, "    Failed to create file setup\n");
-        exit(2);
-    }
-    afInitSampleFormat(filesetup, AF_DEFAULT_TRACK, AF_SAMPFMT_TWOSCOMP, 16);
-    afInitRate(filesetup, AF_DEFAULT_TRACK, (float) SAMPLE_RATE);
-    afInitFileFormat(filesetup, AF_FILE_WAVE);
-    afInitChannels(filesetup, AF_DEFAULT_TRACK, 6);
-
-    filesetup2 = afNewFileSetup();
-    if (filesetup2 == AF_NULL_FILESETUP)
-    {
-        fprintf(stderr, "    Failed to create file setup\n");
-        exit(2);
-    }
-    afInitSampleFormat(filesetup2, AF_DEFAULT_TRACK, AF_SAMPFMT_TWOSCOMP, 16);
-    afInitRate(filesetup2, AF_DEFAULT_TRACK, (float) SAMPLE_RATE);
-    afInitFileFormat(filesetup2, AF_FILE_WAVE);
-    afInitChannels(filesetup2, AF_DEFAULT_TRACK, 1);
-
-    resulthandle = afOpenFile("result_sound.wav", "w", filesetup);
-    if (resulthandle == AF_NULL_FILEHANDLE)
-    {
-        fprintf(stderr, "    Failed to open result file\n");
-        exit(2);
-    }
-
-    residuehandle = afOpenFile("residue_sound.wav", "w", filesetup2);
-    if (residuehandle == AF_NULL_FILEHANDLE)
-    {
-        fprintf(stderr, "    Failed to open residue file\n");
-        exit(2);
-    }
-    local_cur = 0;
-    far_cur = 0;
-    result_cur = 0;
+    awgn_init_dbm0(&rin_noise_source, 7162534, 0.0f);
+    awgn_init_dbm0(&sgen_noise_source, 7162534, 0.0f);
+    Rin_power_meter = level_measurement_device_create(0);
+    Sgen_power_meter = level_measurement_device_create(0);
+    Sin_power_meter = level_measurement_device_create(0);
+    Sout_power_meter = level_measurement_device_create(0);
     if (channel_model_create(model_number))
     {
         fprintf(stderr, "    Failed to create line model\n");
         exit(2);
     }
-#if defined(ENABLE_GUI)
-    if (use_gui)
-    {
-        start_echo_can_monitor(TEST_EC_TAPS);
-        echo_can_monitor_line_model_update(line_model.coeffs, line_model.taps);
-    }
-#endif
-    power_meter_1 = level_measurement_device_create(0);
-    power_meter_2 = level_measurement_device_create(0);
 
-    level_measurement_device(power_meter_1, 0);
+    far_cur = 0;
+    result_cur = 0;
 
-#if 0
-    echo_can_flush(ctx);
-    /* Converge the canceller */
-    signal_restart(&local_css);
-    for (i = 0;  i < 800*2;  i++)
-    {
-        clean = echo_can_update(ctx, 0, 0);
-        put_residue(clean);
+    if (verbose == TRUE) {
+	printf("ERL (linear)......: %6.2f (%5.2f)\n"
+	       "Rin level (linear).: %6.2f (%5.2f)\n"
+	       "Sgen level (linear): %6.2f (%5.2f)\n",
+	       20.0*log10(erl), erl, 
+	       20.0*log10(Rin_level), Rin_level,
+	       20.0*log10(Sgen_level), Sgen_level);
     }
-    for (i = 0;  i < SAMPLE_RATE*5;  i++)
-    {
-        tx = signal_amp(&local_css);
-        channel_model(&tx, &rx, tx, 0);
-        clean = echo_can_update(ctx, tx, rx);
-        put_residue(clean);
-    }
-    echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION | ECHO_CAN_USE_NLP | ECHO_CAN_USE_CNG);
-    for (i = 0;  i < SAMPLE_RATE*5;  i++)
-    {
-        tx = signal_amp(&local_css);
-        channel_model(&tx, &rx, tx, 0);
-        clean = echo_can_update(ctx, tx, rx);
-        put_residue(clean);
-    }
-    echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
-    
-    for (i = 0;  i < SAMPLE_RATE*10;  i++)
-    {
-        tx = signal_amp(&local_css);
-#if 0
-        if ((i/10000)%10 == 9)
-        {
-            /* Inject a burst of far sound */
-            if (far_cur >= far_max)
-            {
-                far_max = afReadFrames(farhandle, AF_DEFAULT_TRACK, far_sound, SAMPLE_RATE);
-                if (far_max < 0)
-                {
-                    fprintf(stderr, "    Error reading far sound\n");
-                    exit(2);
-                }
-                if (far_max == 0)
-                    break;
-                far_cur = 0;
-            }
-            far_tx = far_sound[far_cur++];
-        }
-        else
-        {
-            far_tx = 0;
-        }
-#else
-        far_sound[0] = 0;
-        far_tx = 0;
-#endif
-        channel_model(&tx, &rx, tx, far_tx);
-        //rx += awgn(&far_noise_source);
-        //tx += awgn(&far_noise_source);
-        clean = echo_can_update(ctx, tx, rx);
 
-#if defined(XYZZY)
-        if (i%SAMPLE_RATE == 0)
-        {
-            if (coeff_index < 200)
-            {
-                for (j = 0;  j < ctx->taps;  j++)
-                    coeffs[coeff_index][j] = ctx->fir_taps32[j];
-                coeff_index++;
-            }
-        }
-#endif
-        result_sound[result_cur++] = tx;
-        result_sound[result_cur++] = rx;
-        result_sound[result_cur++] = clean - far_tx;
-        //result_sound[result_cur++] = ctx->tx_power[2];
-        //result_sound[result_cur++] = ctx->tx_power[1];
-        result_sound[result_cur++] = (ctx->tx_power[1] > 64)  ?  SAMPLE_RATE  :  -SAMPLE_RATE;
-        //result_sound[result_cur++] = ctx->tap_set*SAMPLE_RATE;
-        //result_sound[result_cur++] = (ctx->nonupdate_dwell > 0)  ?  SAMPLE_RATE  :  -SAMPLE_RATE;
-        //result_sound[result_cur++] = ctx->latest_correction >> 8;
-        //result_sound[result_cur++] = level_measurement_device(tx)/(16.0*65536.0);
-        //result_sound[result_cur++] = level_measurement_device(tx)/4096.0;
-        result_sound[result_cur++] = (ctx->tx_power[1] > ctx->rx_power[0])  ?  SAMPLE_RATE  :  -SAMPLE_RATE;
-        //result_sound[result_cur++] = (ctx->tx_power[1] > ctx->rx_power[0])  ?  SAMPLE_RATE  :  -SAMPLE_RATE;
-        //result_sound[result_cur++] = (ctx->narrowband_score)*5; //  ?  SAMPLE_RATE  :  -SAMPLE_RATE;
-        //result_sound[result_cur++] = ctx->tap_rotate_counter*10;
-        result_sound[result_cur++] = ctx->vad;
-        
-        put_residue(clean - far_tx);
-        if (result_cur >= 6*SAMPLE_RATE)
-        {
-            outframes = afWriteFrames(resulthandle,
-                                      AF_DEFAULT_TRACK,
-                                      result_sound,
-                                      result_cur/6);
-            if (outframes != result_cur/6)
-            {
-                fprintf(stderr, "    Error writing result sound\n");
-                exit(2);
-            }
-            result_cur = 0;
-        }
+    fdump = fopen("dump.txt","wt");
+    assert(fdump != NULL);
+    flevel = fopen("level.txt","wt");
+    assert(flevel != NULL);
+
+    if (file_mode == TRUE) {
+	/* process wave files instead of running tests, useful for
+	   testing real world signals */
+	int ntx, nrx, nec;
+	int16_t rin, rout, sin, sout;
+	int mode;
+
+	mode =  ECHO_CAN_USE_ADAPTION | ECHO_CAN_USE_NLP;
+	if (cng) 
+	    mode |= ECHO_CAN_USE_CNG;
+	else
+	    mode |= ECHO_CAN_USE_CLIP;
+	if (hpf) {
+	    mode |= ECHO_CAN_USE_TX_HPF;
+	    mode |= ECHO_CAN_USE_RX_HPF;
+	}
+	echo_can_adaption_mode(ctx, mode);
+	do {
+	    ntx = afReadFrames(txfile, AF_DEFAULT_TRACK, &rin, 1);
+	    if (ntx < 0) {	   
+		fprintf(stderr, "    Error reading tx sound file\n");
+		exit(2);
+	    }
+	    nrx = afReadFrames(rxfile, AF_DEFAULT_TRACK, &sin, 1);
+	    if (nrx < 0) {	   
+		fprintf(stderr, "    Error reading rx sound file\n");
+		exit(2);
+	    }
+
+	    rout = echo_can_hpf_tx(ctx, rin);
+	    sout = echo_can_update(ctx, rout, sin);
+
+	    nec = afWriteFrames(ecfile, AF_DEFAULT_TRACK, &sout, 1);
+	    if (nec != 1) {
+		fprintf(stderr, "    Error writing ec sound file\n");
+		exit(2);
+	    }
+
+	    update_levels(rin, sin, sout, 0);
+	    write_log_files(rin, sin);
+	    
+	} while (ntx && nrx);
+
+	dump_h();
+
+	afCloseFile(txfile);
+	afCloseFile(rxfile);
+	afCloseFile(ecfile);	
+	exit(0);
     }
-    if (result_cur > 0)
-    {
-        outframes = afWriteFrames(resulthandle,
-                                  AF_DEFAULT_TRACK,
-                                  result_sound,
-                                  result_cur/6);
-        if (outframes != result_cur/4)
-        {
-            fprintf(stderr, "    Error writing result sound\n");
-            exit(2);
-        }
+
+    signal_load(&local_css, "sound_c1_8k.wav");
+    signal_load(&far_css, "sound_c3_8k.wav");
+
+    strcpy(test_name, argv[1]);
+
+    /* basic unit test used in e/c dvelopment */
+
+    if (!strcasecmp(argv[1], "ut1")) {
+	int16_t rin, sin, rout, sout, sgen;
+
+	print_title("Performing Unit Test 1 - DC inputs\n");
+	reset_all();
+	echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
+
+	rout = rin = 2000;
+	sin = 1000;
+	sgen = 0;
+	for(i=0; i<10; i++) {
+	    rout = 2000+2*i;
+	    sout = echo_can_update(ctx, rout, sin);
+	    update_levels(rin, sin, sout, sgen);
+	    write_log_files(rout, sin);
+	}
+	dump_h();
     }
-#endif
 
     /* Test 1 - Steady state residual and returned echo level test */
     /* This functionality has been merged with test 2 in newer versions of G.168,
        so test 1 no longer exists. */
 
     /* Test 2 - Convergence and steady state residual and returned echo level test */
-    if ((test_list & PERFORM_TEST_2A))
-    {
-        printf("Performing test 2A - Convergence with NLP enabled\n");
-        /* Test 2A - Convergence with NLP enabled */
-        echo_can_flush(ctx);
-        echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION | ECHO_CAN_USE_NLP);
-        /* Converge the canceller */
-        signal_restart(&local_css);
-        for (i = 0;  i < 800*2;  i++)
-        {
-            clean = echo_can_update(ctx, 0, 0);
-            put_residue(clean);
-        }
-        for (i = 0;  i < SAMPLE_RATE*50;  i++)
-        {
-            tx = signal_amp(&local_css);
-            channel_model(&tx, &rx, tx, 0);
-            clean = echo_can_update(ctx, tx, rx);
-            pp1 = level_measurement_device(power_meter_1, rx);
-            pp2 = level_measurement_device(power_meter_2, clean);
-            residue = 100.0*pp1/pp2;
-            put_residue(residue);
-#if defined(ENABLE_GUI)
-            if (use_gui)
-                echo_can_monitor_can_update(ctx->fir_taps16[ctx->tap_set], TEST_EC_TAPS);
-#endif
-        }
-#if defined(ENABLE_GUI)
-        if (use_gui)
-            echo_can_monitor_can_update(ctx->fir_taps16[ctx->tap_set], TEST_EC_TAPS);
-#endif
+
+    /*
+      NOTE: This test is only partially implemented, only the conidtion after
+      1s is tested and I am still not sure if LSout == Lres in the part
+      of the test after 1s.  
+    */
+
+    if (!strcasecmp(argv[1], "2aa")) {
+
+	print_title("Performing test 2A(a) - Convergence with NLP enabled\n");
+	reset_all();
+	echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION | ECHO_CAN_USE_NLP);
+
+	/* initial zero input as reqd by G168 */
+
+	mute_Rin();
+	run_test(200, MSEC);
+	unmute_Rin();
+
+	/* Now test convergence */
+
+	run_test(1, SEC);
+	reset_meter_peaks();
+	install_test_callback(test_2a);
+	run_test(10, SEC);
+	
+	print_results();
     }
 
+#ifdef OTHER_TESTS
     if ((test_list & PERFORM_TEST_2B))
     {
-        printf("Performing test 2B - Convergence with NLP disabled\n");
-        /* Test 2B - Convergence with NLP disabled */
+        printf("Performing test 2B - Re-convergence with NLP disabled\n");
+
+        /* Test 2B - Re-convergence with NLP disabled */
+
         echo_can_flush(ctx);
         echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
+
         /* Converge a canceller */
+
         signal_restart(&local_css);
         for (i = 0;  i < 800*2;  i++)
         {
             clean = echo_can_update(ctx, 0, 0);
             put_residue(clean);
         }
+
         for (i = 0;  i < SAMPLE_RATE*5;  i++)
         {
             tx = signal_amp(&local_css);
@@ -689,196 +1048,190 @@ int main(int argc, char *argv[])
             echo_can_monitor_can_update(ctx->fir_taps16[ctx->tap_set], TEST_EC_TAPS);
 #endif
     }
-
-    if ((test_list & PERFORM_TEST_2C))
-    {
-        printf("Performing test 2C - Convergence with background noise present\n");
-        /* Test 2C - Convergence with background noise present */
-        echo_can_flush(ctx);
-        echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
-        /* Converge a canceller */
-        signal_restart(&local_css);
-        for (i = 0;  i < 800*2;  i++)
-        {
-            clean = echo_can_update(ctx, 0, 0);
-            put_residue(clean);
-        }
-        /* TODO: This uses a crude approx. to Hoth noise. We need the real thing. */
-        awgn_init_dbm0(&far_noise_source, 7162534, -40.0f);
-        hoth_noise = 0;
-        for (i = 0;  i < SAMPLE_RATE*5;  i++)
-        {
-            hoth_noise = hoth_noise*0.625 + awgn(&far_noise_source)*0.375;
-            tx = signal_amp(&local_css);
-            channel_model(&tx, &rx, tx, hoth_noise);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean);
-        }
-        /* Now freeze adaption, and measure the echo. */
-        echo_can_adaption_mode(ctx, 0);
-        for (i = 0;  i < SAMPLE_RATE*5;  i++)
-        {
-            tx = signal_amp(&local_css);
-            channel_model(&tx, &rx, tx, 0);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean);
-        }
-        echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
-#if defined(ENABLE_GUI)
-        if (use_gui)
-            echo_can_monitor_can_update(ctx->fir_taps16[ctx->tap_set], TEST_EC_TAPS);
 #endif
+
+    if (!strcasecmp(argv[1], "2ca")) {
+	float SgenLeveldB;
+
+	print_title("Performing test 2C(a) - Convergence with background noise present\n");
+	reset_all();
+	echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION | ECHO_CAN_USE_NLP);
+
+	/* Converge canceller with background noise */
+
+	mute_Rin();
+	run_test(200, MSEC);
+	unmute_Rin();
+
+	SgenLeveldB = 20.0*log10(Rin_level) - 15.0;
+	if (SgenLeveldB > -30.0) SgenLeveldB = -30.0;
+	set_Sgen(HOTH, SgenLeveldB);
+	run_test(1, SEC);
+	maxHoth = maxLSgen;
+
+	/* After 1 second freeze adaption, switch off noise. */
+
+	mute_Rin();
+	run_test(150, MSEC);
+
+	echo_can_adaption_mode(ctx, ECHO_CAN_USE_NLP);
+	run_test(1, SEC);
+
+	unmute_Rin();
+	set_Sgen(NONE, 0.0);
+	run_test(500, MSEC);
+
+	/* now measure the echo */
+
+	reset_meter_peaks();
+	maxLSgen = maxHoth; /* keep this peak for print out but reset the rest */
+	install_test_callback(test_2c);
+	set_Sgen(NONE, 0.0);
+	run_test(5, SEC);
+
+	print_results();
     }
 
     /* Test 3 - Performance under double talk conditions */
-    if ((test_list & PERFORM_TEST_3A))
-    {
-        printf("Performing test 3A - Double talk test with low cancelled-end levels\n");
-        /* Test 3A - Double talk test with low cancelled-end levels */
-        echo_can_flush(ctx);
-        echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
-        signal_restart(&local_css);
-        signal_restart(&far_css);
-        /* Apply double talk, with a weak far end signal */
-        for (i = 0;  i < SAMPLE_RATE*5;  i++)
-        {
-            tx = signal_amp(&local_css);
-            rx = signal_amp(&far_css)/20;
-            channel_model(&tx, &rx, tx, rx);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean - rx);
-        }
-        /* Now freeze adaption. */
-        echo_can_adaption_mode(ctx, 0);
-        for (i = 0;  i < 800*5;  i++)
-        {
-            tx = signal_amp(&local_css);
-            channel_model(&tx, &rx, tx, 0);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean);
-        }
-        /* Now measure the echo */
-        for (i = 0;  i < SAMPLE_RATE*5;  i++)
-        {
-            tx = signal_amp(&local_css);
-            channel_model(&tx, &rx, tx, 0);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean);
-        }
-        echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
-#if defined(ENABLE_GUI)
-        if (use_gui)
-            echo_can_monitor_can_update(ctx->fir_taps16[ctx->tap_set], TEST_EC_TAPS);
-#endif
+
+    if (!strcasecmp(argv[1], "3a")) {
+	print_title("Performing test 3A - Double talk test with low cancelled-end levels\n");
+	reset_all();
+
+	echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
+	set_Sgen(CSS, -15.0 + 20.0*log10(Rin_level));
+	run_test(5, SEC);
+	tmp = maxLSgen;
+
+	/* now freeze adaption */
+
+	echo_can_adaption_mode(ctx, 0);
+	set_Sgen(NONE, 0.0);
+	run_test(500, MSEC);
+
+	/* Now measure the echo */
+
+	reset_meter_peaks();
+	maxLSgen = tmp;
+	install_test_callback(test_3a);
+	run_test(5, SEC);
+
+	print_results();
     }
 
-    if ((test_list & PERFORM_TEST_3B))
-    {
-        printf("Performing test 3B - Double talk test with high cancelled-end levels\n");
-        /* Test 3B - Double talk test with high cancelled-end levels */
-        echo_can_flush(ctx);
-        echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
-        signal_restart(&local_css);
-        signal_restart(&far_css);
-        /* Converge the canceller */
-        for (i = 0;  i < SAMPLE_RATE*5;  i++)
-        {
-            tx = signal_amp(&local_css);
-            channel_model(&tx, &rx, tx, 0);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean);
-        }
-        /* Apply double talk */
-        for (i = 0;  i < SAMPLE_RATE*5;  i++)
-        {
-            tx = signal_amp(&local_css);
-            rx = signal_amp(&far_css);
-            channel_model(&tx, &rx, tx, rx);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean - rx);
-        }
-        /* Now freeze adaption. */
-        echo_can_adaption_mode(ctx, 0);
-        for (i = 0;  i < 800*5;  i++)
-        {
-            tx = signal_amp(&local_css);
-            channel_model(&tx, &rx, tx, 0);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean);
-        }
-        /* Now measure the echo */
-        for (i = 0;  i < SAMPLE_RATE*5;  i++)
-        {
-            tx = signal_amp(&local_css);
-            channel_model(&tx, &rx, tx, 0);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean);
-        }
-        echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
-#if defined(ENABLE_GUI)
-        if (use_gui)
-            echo_can_monitor_can_update(ctx->fir_taps16[ctx->tap_set], TEST_EC_TAPS);
-#endif
+    if (!strcasecmp(argv[1], "3ba")) {
+	float fig11;
+
+	print_title("Performing test 3B(a) - Double talk stability test with high cancelled-end levels\n");
+	reset_all();
+
+	echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
+	run_test(5, SEC);
+		
+	/* Apply double talk */
+
+	set_Sgen(CSS, 20.0*log10(Sgen_level));
+	run_test(5, SEC);
+	tmp = maxLSgen;
+
+	/* freeze adaption and measure echo */
+
+	mute_Rin();
+	run_test(150, MSEC);
+
+	echo_can_adaption_mode(ctx, 0);
+	run_test(1, SEC);
+
+	unmute_Rin();
+	set_Sgen(NONE, 0.0);
+	run_test(500, MSEC);
+
+	/* Now measure the echo */
+
+	fig11 = (25.0/30.0)*maxLRin - 30.0; /* pass/fail based on clean level @ tx peak */
+	threshold = fig11 + 10.0;
+	reset_meter_peaks();
+	maxLSgen = tmp;
+	install_test_callback(test_3b);
+	run_test(5, SEC);
+
+	print_results();
     }
 
-    if ((test_list & PERFORM_TEST_3C))
-    {
-        printf("Performing test 3C - Double talk test with simulated conversation\n");
-        /* Test 3C - Double talk test with simulated conversation */
-        echo_can_flush(ctx);
-        echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
-        signal_restart(&local_css);
-        signal_restart(&far_css);
-        /* Apply double talk */
-        for (i = 0;  i < 800*56;  i++)
-        {
-            tx = signal_amp(&local_css);
-            rx = signal_amp(&far_css);
-            channel_model(&tx, &rx, tx, rx);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean - rx);
-        }
-        /* Stop the far signal */
-        for (i = 0;  i < 800*14;  i++)
-        {
-            tx = signal_amp(&local_css);
-            channel_model(&tx, &rx, tx, 0);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean);
-        }
-        /* Continue measuring the resulting echo */
-        for (i = 0;  i < 800*50;  i++)
-        {
-            tx = signal_amp(&local_css);
-            channel_model(&tx, &rx, tx, 0);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean);
-        }
-        /* Reapply double talk */
-        signal_restart(&far_css);
-        for (i = 0;  i < 800*56;  i++)
-        {
-            tx = signal_amp(&local_css);
-            rx = signal_amp(&far_css);
-            channel_model(&tx, &rx, tx, rx);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean - rx);
-        }
-        /* Now the far signal only */
-        for (i = 0;  i < 800*56;  i++)
-        {
-            tx = 0;
-            rx = signal_amp(&far_css);
-            channel_model(&tx, &rx, 0, rx);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean - rx);
-        }
-#if defined(ENABLE_GUI)
-        if (use_gui)
-            echo_can_monitor_can_update(ctx->fir_taps16[ctx->tap_set], TEST_EC_TAPS);
-#endif
+    if (!strcasecmp(argv[1], "3bb")) {
+	float fig11;
+
+	print_title("Performing test 3B(b) - Double talk stability test with low cancelled-end levels\n");
+	reset_all();
+
+	echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
+	run_test(5, SEC);
+
+	/* Apply double talk */
+
+	set_Sgen(CSS,  20.0*log10(Rin_level) - 20.0*log10(X_level));
+	run_test(5, SEC);
+	tmp = maxLSgen;
+
+	/* freeze adaption and measure echo */
+
+	mute_Rin();
+	run_test(150, MSEC);
+
+	echo_can_adaption_mode(ctx, 0);
+	run_test(1, SEC);
+
+	unmute_Rin();
+	set_Sgen(NONE, 0.0);
+	run_test(500, MSEC);
+
+	/* Now measure the echo */
+
+	fig11 = (25.0/30.0)*maxLRin - 30.0; /* pass/fail based on clean level @ tx peak */
+	threshold = fig11 + 3.0;
+	reset_meter_peaks();
+	maxLSgen = tmp;
+	install_test_callback(test_3b);
+	run_test(5, SEC);
+
+	print_results();
     }
 
+    if (!strcasecmp(argv[1], "3c")) {
+	print_title("Performing test 3C - Double talk test under simulated conversation\n");
+	reset_all();
+
+	/* t1 (5.6s) - double talk */
+
+	echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION | ECHO_CAN_USE_NLP);
+	set_Sgen(CSS,  Sgen_leveldB);
+	run_test(5600, MSEC);
+
+	/* t2 (1.4s) - to pass Sout <= Sgen */
+
+	set_Sgen(NONE, 0.0);
+	install_test_callback(test_3c_t2);
+	run_test(1400, MSEC);
+
+	/* t3 - (5s) - single talk to converge e/c */
+
+	run_test(5000, MSEC);
+
+	/* t4 - (5.6s) - double talk again */
+
+	install_test_callback(test_3c_t4t5);
+	set_Sgen(CSS,  Sgen_leveldB);
+	run_test(5600, MSEC);
+
+	/* t5 - (5.6s) - near end single talk  */
+
+	mute_Rin();
+	run_test(5600, MSEC);
+
+	print_results();
+    }
+
+#ifdef OTHER_TESTS
     if ((test_list & PERFORM_TEST_4))
     {
         printf("Performing test 4 - Leak rate test\n");
@@ -947,25 +1300,30 @@ int main(int argc, char *argv[])
 #endif
     }
 
-    if ((test_list & PERFORM_TEST_6))
+#endif
+
+    if (!strcasecmp(argv[1], "6"))
     {
+	int   k;
+	float fig11;
+
         printf("Performing test 6 - Non-divergence on narrow-band signals\n");
-        /* Test 6 - Non-divergence on narrow-band signals */
-        echo_can_flush(ctx);
-        echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
-        /* Converge the canceller */
-        signal_restart(&local_css);
-        for (i = 0;  i < SAMPLE_RATE*5;  i++)
-        {
-            tx = signal_amp(&local_css);
-            channel_model(&tx, &rx, tx, 0);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean);
-        }
+
+	reset_all();
+	echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
+	run_test(5, SEC);
+
         /* Now put 5s bursts of a list of tones through the converged canceller, and check
-           that bothing unpleasant happens. */
+           that nothing unpleasant happens. */
+
         for (k = 0;  tones_6_4_2_7[k][0];  k++)
         {
+	    tone_gen_descriptor_t tone_desc;
+	    
+	    /* 5 secs of each tone */
+
+	    echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
+	    set_Rin(TONE, 20.0*log10(Rin_level)); /* level actually set by next func */
             make_tone_gen_descriptor(&tone_desc,
                                      tones_6_4_2_7[k][0],
                                      -11,
@@ -976,33 +1334,28 @@ int main(int argc, char *argv[])
                                      0,
                                      0,
                                      1);
-            tone_gen_init(&tone_state, &tone_desc);
-            j = 0;
-            for (i = 0;  i < 5;  i++)
-            {
-                local_max = tone_gen(&tone_state, local_sound, SAMPLE_RATE);
-                for (j = 0;  j < SAMPLE_RATE;  j++)
-                {
-                    tx = local_sound[j];
-                    channel_model(&tx, &rx, tx, 0);
-                    clean = echo_can_update(ctx, tx, rx);
-                    put_residue(clean);
-                }
-#if defined(ENABLE_GUI)
-                if (use_gui)
-                {
-                    echo_can_monitor_can_update(ctx->fir_taps16[ctx->tap_set], TEST_EC_TAPS);
-                    echo_can_monitor_update_display();
-                    usleep(100000);
-                }
-#endif
-            }
-        }
-#if defined(ENABLE_GUI)
-        if (use_gui)
-            echo_can_monitor_can_update(ctx->fir_taps16[ctx->tap_set], TEST_EC_TAPS);
-#endif
+            tone_gen_init(&rin_tone_state, &tone_desc);
+	    run_test(5, SEC);
+	}
+
+	/* disable adaption, back to speech */
+
+	echo_can_adaption_mode(ctx, 0);
+	set_Rin(CSS, 20.0*log10(Rin_level)); 
+	run_test(1, SEC);
+
+	/* now test convergence as per test 2 fig 11 */
+
+	fig11 = (25.0/30.0)*maxLRin - 30.0; /* pass/fail based on clean level @ tx peak */
+	threshold = fig11 + 10.0;
+	reset_meter_peaks();
+	install_test_callback(test_3b);
+	run_test(5, SEC);	
+
+	print_results();
     }
+
+#ifdef OTHER_TESTS
 
     if ((test_list & PERFORM_TEST_7))
     {
@@ -1055,67 +1408,59 @@ int main(int argc, char *argv[])
         /* Test 8 - Non-convergence on No 5, 6, and 7 in-band signalling */
         fprintf(stderr, "Test 8 not yet implemented\n");
     }
+#endif
 
-    if ((test_list & PERFORM_TEST_9))
+    if (!strcasecmp(argv[1], "9"))
     {
         printf("Performing test 9 - Comfort noise test\n");
-        /* Test 9 - Comfort noise test */
-        /* Test 9 part 1 - matching */
-        echo_can_flush(ctx);
-        echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION);
-        /* Converge the canceller */
-        signal_restart(&local_css);
-        for (i = 0;  i < SAMPLE_RATE*5;  i++)
-        {
-            tx = signal_amp(&local_css);
-            channel_model(&tx, &rx, tx, 0);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean);
-        }
-        echo_can_adaption_mode(ctx, ECHO_CAN_USE_ADAPTION | ECHO_CAN_USE_NLP | ECHO_CAN_USE_CNG);
-        awgn_init_dbm0(&far_noise_source, 7162534, -45.0f);
-        for (i = 0;  i < SAMPLE_RATE*30;  i++)
-        {
-            tx = 0;
-            rx = awgn(&far_noise_source);
-            channel_model(&tx, &rx, tx, rx);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean);
-        }
-        awgn_init_dbm0(&local_noise_source, 1234567, -10.0f);
-        for (i = 0;  i < SAMPLE_RATE*2;  i++)
-        {
-            tx = awgn(&local_noise_source);
-            rx = awgn(&far_noise_source);
-            channel_model(&tx, &rx, tx, rx);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean);
-        }
 
-        /* Test 9 part 2 - adjust down */
-        awgn_init_dbm0(&far_noise_source, 7162534, -55.0f);
-        for (i = 0;  i < SAMPLE_RATE*10;  i++)
-        {
-            tx = 0;
-            rx = awgn(&far_noise_source);
-            channel_model(&tx, &rx, tx, rx);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean);
-        }
-        for (i = 0;  i < SAMPLE_RATE*2;  i++)
-        {
-            tx = awgn(&local_noise_source);
-            rx = awgn(&far_noise_source);
-            channel_model(&tx, &rx, tx, rx);
-            clean = echo_can_update(ctx, tx, rx);
-            put_residue(clean);
-        }
-#if defined(ENABLE_GUI)
-        if (use_gui)
-            echo_can_monitor_can_update(ctx->fir_taps16[ctx->tap_set], TEST_EC_TAPS);
-#endif
+        echo_can_flush(ctx);
+        echo_can_adaption_mode(ctx,   ECHO_CAN_USE_ADAPTION 
+			            | ECHO_CAN_USE_NLP 
+			            | ECHO_CAN_USE_CNG);
+
+        /* Test 9 Part 1 - matching */
+
+	set_Sgen(HOTH, -45.0);
+	mute_Rin();
+	run_test(5, SEC); /* should be 30s but I wanted to speed up sim */
+	set_Rin(HOTH, -10.0);
+	run_test(2, SEC); 
+
+	reset_meter_peaks();
+	install_test_callback(test_9);
+	run_test(700, MSEC); 
+
+        /* Test 9 Part 2 - adjustment down */
+
+	install_test_callback(NULL);
+	set_Sgen(HOTH, -55.0);
+	mute_Rin();
+	run_test(5, SEC); /* should be 10s but I wanted to speed up sim */
+	set_Rin(HOTH, -10.0);
+	run_test(2, SEC); 
+
+	reset_meter_peaks();
+	install_test_callback(test_9);
+	run_test(700, MSEC); 
+
+        /* Test 9 Part 3 - adjustment up */
+
+	install_test_callback(NULL);
+	set_Sgen(HOTH, -45.0);
+	mute_Rin();
+	run_test(5, SEC); /* should be 10s but I wanted to speed up sim */
+	set_Rin(HOTH, -10.0);
+	run_test(2, SEC); 
+
+	reset_meter_peaks();
+	install_test_callback(test_9);
+	run_test(700, MSEC); 
+
+ 	print_results();
     }
 
+#ifdef OTHER_TESTS
     /* Test 10 - FAX test during call establishment phase */
     if ((test_list & PERFORM_TEST_10A))
     {
@@ -1202,19 +1547,19 @@ int main(int argc, char *argv[])
         fprintf(stderr, "\n");
     }
 #endif
-    printf("Run time %lds\n", time(NULL) - now);
+#endif
+    if (verbose == TRUE)
+	printf("Run time %lds\n", time(NULL) - now);
     
 #if defined(ENABLE_GUI)
     if (use_gui)
         echo_can_monitor_wait_to_end();
 #endif
 
-    if (power_meter_1)
-        level_measurement_device_release(power_meter_1);
-    if (power_meter_2)
-        level_measurement_device_release(power_meter_2);
 
-    printf("Tests passed.\n");
+    fclose(fdump);
+    fclose(flevel);
+
     return  0;
 }
 /*- End of function --------------------------------------------------------*/
