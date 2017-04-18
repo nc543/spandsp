@@ -181,6 +181,8 @@ SPANDSP_LT_AGE = @SPANDSP_LT_AGE@
 SPANDSP_LT_CURRENT = @SPANDSP_LT_CURRENT@
 SPANDSP_LT_REVISION = @SPANDSP_LT_REVISION@
 SPANDSP_MISALIGNED_ACCESS_FAILS = @SPANDSP_MISALIGNED_ACCESS_FAILS@
+SPANDSP_SUPPORT_T85 = @SPANDSP_SUPPORT_T85@
+SPANDSP_SUPPORT_V34 = @SPANDSP_SUPPORT_V34@
 SPANDSP_USE_EXPORT_CAPABILITY = @SPANDSP_USE_EXPORT_CAPABILITY@
 SPANDSP_USE_FIXED_POINT = @SPANDSP_USE_FIXED_POINT@
 STRIP = @STRIP@
@@ -247,9 +249,9 @@ EXTRA_DIST = autogen.sh \
              debian/rules \
              debian/watch \
              README.testdata \
-             spandsp.pc \
              spandsp.spec \
              spandsp/fax-tests.dtd \
+             spandsp/fax-tests.xml \
              spandsp/global-tones.xml \
              spandsp/tones.dtd \
              spandsp/tsb85.xml \
@@ -512,7 +514,7 @@ distdir: $(DISTFILES)
 	      || exit 1; \
 	  fi; \
 	done
-	-find $(distdir) -type d ! -perm -777 -exec chmod a+rwx {} \; -o \
+	-find $(distdir) -type d ! -perm -755 -exec chmod a+rwx,go+rx {} \; -o \
 	  ! -type d ! -perm -444 -links 1 -exec chmod a+r {} \; -o \
 	  ! -type d ! -perm -400 -exec chmod a+r {} \; -o \
 	  ! -type d ! -perm -444 -exec $(SHELL) $(install_sh) -c -m a+r {} {} \; \

@@ -217,6 +217,10 @@ SOURCE=.\ima_adpcm.c
 # End Source File
 # Begin Source File
 
+SOURCE=.\image_translate.c
+# End Source File
+# Begin Source File
+
 SOURCE=.\logging.c
 # End Source File
 # Begin Source File
@@ -346,6 +350,10 @@ SOURCE=.\testcpuid.c
 # Begin Source File
 
 SOURCE=.\time_scale.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\timezone.c
 # End Source File
 # Begin Source File
 
@@ -543,6 +551,10 @@ SOURCE=.\spandsp/ima_adpcm.h
 # End Source File
 # Begin Source File
 
+SOURCE=.\spandsp/image_translate.h
+# End Source File
+# Begin Source File
+
 SOURCE=.\spandsp/logging.h
 # End Source File
 # Begin Source File
@@ -611,14 +623,6 @@ SOURCE=.\spandsp/swept_tone.h
 # End Source File
 # Begin Source File
 
-SOURCE=.\spandsp/t4_rx.h
-# End Source File
-# Begin Source File
-
-SOURCE=.\spandsp/t4_tx.h
-# End Source File
-# Begin Source File
-
 SOURCE=.\spandsp/t30.h
 # End Source File
 # Begin Source File
@@ -659,11 +663,31 @@ SOURCE=.\spandsp/t38_terminal.h
 # End Source File
 # Begin Source File
 
+SOURCE=.\spandsp/t4_rx.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/t4_tx.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/t4_t6_decode.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/t4_t6_encode.h
+# End Source File
+# Begin Source File
+
 SOURCE=.\spandsp/telephony.h
 # End Source File
 # Begin Source File
 
 SOURCE=.\spandsp/time_scale.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/timezone.h
 # End Source File
 # Begin Source File
 
@@ -807,6 +831,10 @@ SOURCE=.\spandsp/private/ima_adpcm.h
 # End Source File
 # Begin Source File
 
+SOURCE=.\spandsp/private/image_translate.h
+# End Source File
+# Begin Source File
+
 SOURCE=.\spandsp/private/logging.h
 # End Source File
 # Begin Source File
@@ -895,7 +923,19 @@ SOURCE=.\spandsp/private/t4_tx.h
 # End Source File
 # Begin Source File
 
+SOURCE=.\spandsp/private/t4_t6_decode.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/t4_t6_encode.h
+# End Source File
+# Begin Source File
+
 SOURCE=.\spandsp/private/time_scale.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\spandsp/private/timezone.h
 # End Source File
 # Begin Source File
 
